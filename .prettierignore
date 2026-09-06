@@ -1,0 +1,6 @@
+node_modules/
+**/dist/
+**/coverage/
+package-lock.json
+# Preserve the supplied authoritative context verbatim.
+docs/ProofServe-Team-Build-Playbook.md
