@@ -50,27 +50,41 @@ const verificationMetadata = {
   providerId: IdentifierSchema,
   method: z.literal('WORLD_SELFIE_CHECK'),
 };
+export const UnverifiedVerificationRecordSchema = z.strictObject({
+  ...verificationMetadata,
+  status: z.literal(VerificationStatusSchema.enum.UNVERIFIED),
+  verifiedAt: z.null(),
+  expiresAt: z.null(),
+});
+const datedVerificationMetadata = {
+  ...verificationMetadata,
+  verifiedAt: TimestampSchema,
+  expiresAt: TimestampSchema,
+};
+const hasOrderedVerificationDates = (record: {
+  verifiedAt: string;
+  expiresAt: string;
+}) => record.expiresAt > record.verifiedAt;
+const verificationDateError = {
+  message: 'expiresAt must be after verifiedAt',
+  path: ['expiresAt'],
+};
+export const VerifiedVerificationRecordSchema = z
+  .strictObject({
+    ...datedVerificationMetadata,
+    status: z.literal(VerificationStatusSchema.enum.VERIFIED),
+  })
+  .refine(hasOrderedVerificationDates, verificationDateError);
+export const ExpiredVerificationRecordSchema = z
+  .strictObject({
+    ...datedVerificationMetadata,
+    status: z.literal(VerificationStatusSchema.enum.EXPIRED),
+  })
+  .refine(hasOrderedVerificationDates, verificationDateError);
 export const VerificationRecordSchema = z.discriminatedUnion('status', [
-  z.strictObject({
-    ...verificationMetadata,
-    status: z.literal(VerificationStatusSchema.enum.UNVERIFIED),
-    verifiedAt: z.null(),
-    expiresAt: z.null(),
-  }),
-  z
-    .strictObject({
-      ...verificationMetadata,
-      status: z.enum([
-        VerificationStatusSchema.enum.VERIFIED,
-        VerificationStatusSchema.enum.EXPIRED,
-      ]),
-      verifiedAt: TimestampSchema,
-      expiresAt: TimestampSchema,
-    })
-    .refine((record) => record.expiresAt > record.verifiedAt, {
-      message: 'expiresAt must be after verifiedAt',
-      path: ['expiresAt'],
-    }),
+  UnverifiedVerificationRecordSchema,
+  VerifiedVerificationRecordSchema,
+  ExpiredVerificationRecordSchema,
 ]);
 export const ProviderSchema = z
   .strictObject({
@@ -210,6 +224,16 @@ export const AgentRunSchema = z
     );
     requireField(run.events.at(-1)?.status !== run.status, 'events');
     if (run.paymentReceipt !== null) {
+      const receiptRequirements = run.paymentReceipt.paymentRequirements;
+      requireField(
+        run.paymentRequirements === null ||
+          receiptRequirements.network !== run.paymentRequirements.network ||
+          receiptRequirements.asset !== run.paymentRequirements.asset ||
+          receiptRequirements.amountAtomic !==
+            run.paymentRequirements.amountAtomic ||
+          receiptRequirements.payTo !== run.paymentRequirements.payTo,
+        'paymentReceipt',
+      );
       requireField(
         run.paymentReceipt.runId !== run.id ||
           run.paymentReceipt.serviceId !== run.selectedServiceId,
@@ -233,6 +257,15 @@ export type ServiceCapability = z.infer<typeof ServiceCapabilitySchema>;
 export type PaymentPrice = z.infer<typeof PaymentPriceSchema>;
 export type PaymentRequirements = z.infer<typeof PaymentRequirementsSchema>;
 export type PaymentBudget = z.infer<typeof PaymentBudgetSchema>;
+export type UnverifiedVerificationRecord = z.infer<
+  typeof UnverifiedVerificationRecordSchema
+>;
+export type VerifiedVerificationRecord = z.infer<
+  typeof VerifiedVerificationRecordSchema
+>;
+export type ExpiredVerificationRecord = z.infer<
+  typeof ExpiredVerificationRecordSchema
+>;
 export type VerificationRecord = z.infer<typeof VerificationRecordSchema>;
 export type Provider = z.infer<typeof ProviderSchema>;
 export type ServiceListing = z.infer<typeof ServiceListingSchema>;

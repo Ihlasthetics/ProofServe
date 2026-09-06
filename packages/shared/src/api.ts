@@ -10,8 +10,7 @@ import {
   ProviderSchema,
   ServiceCapabilitySchema,
   ServiceListingSchema,
-  VerificationRecordSchema,
-  VerificationStatusSchema,
+  VerifiedVerificationRecordSchema,
 } from './contracts.js';
 
 export const ProviderParamsSchema = z.strictObject({ id: IdentifierSchema });
@@ -23,13 +22,7 @@ export const CreateProviderRequestSchema = z.strictObject({
 });
 export const CreateProviderResponseSchema = ProviderSchema;
 // Y04 defines the World request with the pinned SDK; never accept a guessed proof shape here.
-export const WorldVerificationResponseSchema = VerificationRecordSchema.refine(
-  (record) => record.status === VerificationStatusSchema.enum.VERIFIED,
-  {
-    message: 'Successful World verification must return VERIFIED metadata',
-    path: ['status'],
-  },
-);
+export const WorldVerificationResponseSchema = VerifiedVerificationRecordSchema;
 export const CreateServiceRequestSchema = z.strictObject({
   providerId: IdentifierSchema,
   name: ServiceListingSchema.shape.name,

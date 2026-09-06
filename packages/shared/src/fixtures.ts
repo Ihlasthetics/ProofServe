@@ -12,13 +12,15 @@ import {
 /** Development/test data only. No verification, inference, or payment occurred. */
 export const fixtureNotice =
   'FICTIONAL DEVELOPMENT/TEST DATA — never evidence of verification or payment.';
-const createdAt = '2026-09-06T10:00:00.000Z';
+export const fixtureReferenceTime = '2026-09-06T10:00:00.000Z';
+const fixtureTimeAfter = (milliseconds: number) =>
+  new Date(Date.parse(fixtureReferenceTime) + milliseconds).toISOString();
 export const verifiedVerificationFixture = VerificationRecordSchema.parse({
   providerId: 'provider_example_verified',
   method: 'WORLD_SELFIE_CHECK',
   status: 'VERIFIED',
-  verifiedAt: createdAt,
-  expiresAt: '2026-09-07T10:00:00.000Z',
+  verifiedAt: fixtureReferenceTime,
+  expiresAt: fixtureTimeAfter(24 * 60 * 60 * 1000),
 });
 export const unverifiedVerificationFixture = VerificationRecordSchema.parse({
   providerId: 'provider_example_unverified',
@@ -32,16 +34,16 @@ export const verifiedProviderFixture = ProviderSchema.parse({
   displayName: 'Fictional verified operator',
   payoutAccount: '0.0.123456',
   verification: verifiedVerificationFixture,
-  createdAt,
-  updatedAt: createdAt,
+  createdAt: fixtureReferenceTime,
+  updatedAt: fixtureReferenceTime,
 });
 export const unverifiedProviderFixture = ProviderSchema.parse({
   id: unverifiedVerificationFixture.providerId,
   displayName: 'Fictional unverified operator',
   payoutAccount: '0.0.123457',
   verification: unverifiedVerificationFixture,
-  createdAt,
-  updatedAt: createdAt,
+  createdAt: fixtureReferenceTime,
+  updatedAt: fixtureReferenceTime,
 });
 export const activeServiceFixture = ServiceListingSchema.parse({
   id: 'service_example_active',
@@ -57,8 +59,8 @@ export const activeServiceFixture = ServiceListingSchema.parse({
     amountAtomic: '1000000',
     payTo: verifiedProviderFixture.payoutAccount,
   },
-  createdAt,
-  updatedAt: createdAt,
+  createdAt: fixtureReferenceTime,
+  updatedAt: fixtureReferenceTime,
 });
 export const draftServiceFixture = ServiceListingSchema.parse({
   ...activeServiceFixture,
@@ -86,7 +88,7 @@ export const fictionalPaymentReceiptFixture = PaymentReceiptSchema.parse({
   paymentRequirements: activeServiceFixture.paymentRequirements,
   transactionId: 'FICTIONAL-NOT-A-HEDERA-TRANSACTION',
   transactionUrl: 'https://explorer.example.test/fictional-transaction',
-  settledAt: '2026-09-06T10:00:05.000Z',
+  settledAt: fixtureTimeAfter(5000),
 });
 export const createdAgentRunFixture = AgentRunSchema.parse({
   id: 'run_example_created',
@@ -97,9 +99,9 @@ export const createdAgentRunFixture = AgentRunSchema.parse({
   paymentReceipt: null,
   result: null,
   error: null,
-  events: [{ status: 'CREATED', occurredAt: createdAt }],
-  createdAt,
-  updatedAt: createdAt,
+  events: [{ status: 'CREATED', occurredAt: fixtureReferenceTime }],
+  createdAt: fixtureReferenceTime,
+  updatedAt: fixtureReferenceTime,
 });
 export const completedAgentRunFixture = AgentRunSchema.parse({
   ...createdAgentRunFixture,
@@ -118,9 +120,9 @@ export const completedAgentRunFixture = AgentRunSchema.parse({
     .filter((status) => status !== 'FAILED')
     .map((status, index) => ({
       status,
-      occurredAt: `2026-09-06T10:00:0${index}.000Z`,
+      occurredAt: fixtureTimeAfter(index * 1000),
     })),
-  updatedAt: '2026-09-06T10:00:07.000Z',
+  updatedAt: fixtureTimeAfter(7000),
 });
 export const apiErrorFixture = ApiErrorResponseSchema.parse({
   error: {

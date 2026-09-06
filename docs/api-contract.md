@@ -48,6 +48,8 @@ VerificationRecord contains only providerId, method (WORLD_SELFIE_CHECK), status
 verifiedAt, and expiresAt. UNVERIFIED has null timestamps; VERIFIED and EXPIRED
 require both timestamps, with expiresAt after verifiedAt. No raw proof payload,
 selfie image, biometric data, secret, private key, or arbitrary metadata is accepted.
+The strict UnverifiedVerificationRecordSchema, VerifiedVerificationRecordSchema,
+and ExpiredVerificationRecordSchema compose VerificationRecordSchema.
 Provider embeds this record; its providerId must equal the provider's id.
 
 A current verification means VERIFIED and verifiedAt <= server time < expiresAt.
@@ -114,7 +116,9 @@ required from SELECTED onward; requirements from PAYMENT_REQUIRED onward;
 a receipt from PAID onward. Result is non-null only for COMPLETED; error only for
 FAILED. A failed run retains known selection/payment data, including a settled
 receipt when execution fails after payment. A receipt identifies its run and
-selected service. Events are chronological status entries and the final event
+selected service. When a receipt is present, the run must have paymentRequirements
+and its network, asset, amountAtomic, and payTo must exactly match the receipt's
+paymentRequirements. Events are chronological status entries and the final event
 matches the snapshot status. Servers must enforce transition legality and timeline
 ordering; schema parsing alone does not validate event history or real settlement.
 
@@ -215,7 +219,9 @@ Y04 using the pinned SDK and current World documentation. This is the only Y01
 endpoint exempted from having a concrete request JSON example. Y01 adds no World
 dependency, guessed proof schema, or proof-handling behavior.
 
-Success: 200, WorldVerificationResponseSchema. Store the verified record on the
+Success: 200, WorldVerificationResponseSchema, which uses
+VerifiedVerificationRecordSchema directly and infers the literal status VERIFIED.
+UNVERIFIED and EXPIRED records are not successful responses. Store the verified record on the
 provider and update the provider's updatedAt.
 
 <!-- schema: WorldVerificationResponseSchema -->
@@ -620,9 +626,12 @@ receipt and does not imply a refund or authorize a second payment.
 
 All examples are fictional development/test data, use reserved example.test URLs,
 and contain no credentials or signing keys. The shared fixtures parse through
-real schemas on import. Their fixed clock is 2026-09-06T10:00:00.000Z; tests and
-mock displays should use that reference rather than treating them as currently
-verified forever. Never install a fixture-based success fallback in production.
+real schemas on import. The exported fixtureReferenceTime is
+2026-09-06T10:00:00.000Z and anchors all fixture timestamps. T01 and other mock
+consumers must inject fixtureReferenceTime when testing time-dependent eligibility;
+they must not use the computer's real current time with these fixed fixtures.
+For expiry scenarios, inject an explicit offset from fixtureReferenceTime.
+Never install a fixture-based success fallback in production.
 
 Y02 implements registration, configured endpoints, ownership and activation gates,
 and discovery eligibility using these contracts. Y04 resolves the explicitly
