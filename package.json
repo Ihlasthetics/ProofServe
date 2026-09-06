@@ -15,8 +15,12 @@
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "prepare:shared": "npm run build --workspace=@proofserve/shared",
+    "pretypecheck": "npm run prepare:shared",
     "typecheck": "npm run typecheck --workspaces",
+    "pretest": "npm run prepare:shared",
     "test": "npm run test --workspaces",
+    "prebuild": "npm run prepare:shared",
     "build": "npm run build --workspaces",
     "validate": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build"
   },
