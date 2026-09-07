@@ -29,7 +29,11 @@ Run these from the repository root:
 | `npm run format:check` | Check formatting without writing                                                                  |
 | `npm run validate`     | Run formatting check, lint, typecheck, tests, and build in sequence; stop on failure              |
 
-A single workspace can be checked with `npm run typecheck --workspace=@proofserve/api` (replace `api` as needed). Build emits only source modules, not tests. The web workspace is a TypeScript placeholder; a frontend framework and pages are deferred. Smoke tests check entry-point loading without environment configuration and do not claim to test product behavior.
+Root `npm run typecheck`, `npm test`, `npm run build`, and `npm run validate` automatically rebuild the shared package before consumers run. Use these documented root commands instead of directly invoking `npm run <command> --workspaces`.
+
+Before running a single consumer workspace's typecheck, test, or build command from a fresh checkout, run `npm run prepare:shared`. For example, follow it with `npm run typecheck --workspace=@proofserve/api` (replace `api` as needed). Yhlas must rerun shared preparation after changing `packages/shared/src/**` before using consumer-only commands. Generated `dist` files remain ignored and must not be committed.
+
+Build emits only source modules, not tests. The web workspace is a TypeScript placeholder; a frontend framework and pages are deferred. Smoke tests check entry-point loading without environment configuration and do not claim to test product behavior.
 
 ## Repository structure
 
