@@ -1,2 +1,2 @@
-// Y00 foundation only. Feature implementation belongs to a later task.
-export {};
+export { AgentTransitionError, transitionAgentRun } from './state-machine.js';
+export type { AgentTransition } from './state-machine.js';

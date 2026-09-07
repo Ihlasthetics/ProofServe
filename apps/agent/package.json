@@ -9,6 +9,9 @@
       "import": "./dist/index.js"
     }
   },
+  "dependencies": {
+    "@proofserve/shared": "0.0.0"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
