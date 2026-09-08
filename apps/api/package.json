@@ -10,8 +10,13 @@
     }
   },
   "scripts": {
+    "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@proofserve/shared": "0.0.0",
+    "fastify": "^5.12.3"
   }
 }
