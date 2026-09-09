@@ -384,9 +384,9 @@ describe('x402 payment gate', () => {
       receiverAccountId: TEST_RECEIVER,
       priceTinybar: TEST_PRICE,
       facilitatorUrl: 'https://blocky.example.test',
-      modelProvider: 'openai',
-      model: 'configured-model',
-      openAiApiKey: 'fictional-key',
+      modelProvider: 'gemini',
+      model: 'gemini-3.8-flash',
+      geminiApiKey: 'fictional-placeholder',
     };
     const app = createProductionServiceApp(productionConfig);
     openApps.push(app);
@@ -412,7 +412,9 @@ describe('x402 payment gate', () => {
       'https://blocky.example.test/supported',
       'https://blocky.example.test/verify',
     ]);
-    expect(fetchedUrls).not.toContain('https://api.openai.com/v1/responses');
+    expect(fetchedUrls).not.toContain(
+      'https://generativelanguage.googleapis.com/v1beta/interactions',
+    );
   });
 
   it('sanitizes SDK initialization failures before they reach logs or the app', async () => {
@@ -434,9 +436,9 @@ describe('x402 payment gate', () => {
       receiverAccountId: TEST_RECEIVER,
       priceTinybar: TEST_PRICE,
       facilitatorUrl: 'https://blocky.example.test',
-      modelProvider: 'openai',
-      model: 'configured-model',
-      openAiApiKey: 'fictional-key',
+      modelProvider: 'gemini',
+      model: 'gemini-3.8-flash',
+      geminiApiKey: 'fictional-placeholder',
     });
     openApps.push(app);
 

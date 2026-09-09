@@ -11,9 +11,9 @@ export interface ServiceConfig {
   receiverAccountId: string;
   priceTinybar: string;
   facilitatorUrl: string;
-  modelProvider: 'openai';
+  modelProvider: 'gemini';
   model: string;
-  openAiApiKey: string;
+  geminiApiKey: string;
 }
 
 export class ServiceConfigurationError extends Error {
@@ -78,6 +78,18 @@ function parseFacilitatorUrl(value: string): string {
   return url.href.replace(/\/$/, '');
 }
 
+function parseGeminiApiKey(value: string): string {
+  if (
+    value.length < 16 ||
+    value.length > 512 ||
+    value !== value.trim() ||
+    !/^[A-Za-z0-9_-]+$/.test(value)
+  ) {
+    throw new ServiceConfigurationError();
+  }
+  return value;
+}
+
 export function loadServiceConfig(environment: Environment): ServiceConfig {
   const host = required(environment, 'TRIAGE_SERVICE_HOST');
   if (/\s/.test(host)) throw new ServiceConfigurationError();
@@ -90,7 +102,7 @@ export function loadServiceConfig(environment: Environment): ServiceConfig {
   if (
     !HederaAccountIdSchema.safeParse(receiverAccountId).success ||
     !AtomicAmountSchema.safeParse(priceTinybar).success ||
-    modelProvider !== 'openai' ||
+    modelProvider !== 'gemini' ||
     !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(model)
   ) {
     throw new ServiceConfigurationError();
@@ -107,6 +119,6 @@ export function loadServiceConfig(environment: Environment): ServiceConfig {
     ),
     modelProvider,
     model,
-    openAiApiKey: required(environment, 'OPENAI_API_KEY'),
+    geminiApiKey: parseGeminiApiKey(required(environment, 'GEMINI_API_KEY')),
   };
 }

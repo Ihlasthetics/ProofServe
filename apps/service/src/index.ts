@@ -9,7 +9,7 @@ export {
   type ServiceConfig,
 } from './config.js';
 export {
-  OpenAiTriageEngine,
+  GeminiTriageEngine,
   TriageEngineError,
   type TriageEngine,
 } from './engine.js';

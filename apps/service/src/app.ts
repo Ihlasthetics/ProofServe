@@ -15,7 +15,7 @@ import Fastify, {
 } from 'fastify';
 import type { ServiceConfig } from './config.js';
 import {
-  OpenAiTriageEngine,
+  GeminiTriageEngine,
   TriageEngineError,
   type TriageEngine,
 } from './engine.js';
@@ -258,8 +258,8 @@ export function createProductionServiceApp(
   const facilitator = new HTTPFacilitatorClient({
     url: config.facilitatorUrl,
   });
-  const engine = new OpenAiTriageEngine({
-    apiKey: config.openAiApiKey,
+  const engine = new GeminiTriageEngine({
+    apiKey: config.geminiApiKey,
     model: config.model,
   });
 
