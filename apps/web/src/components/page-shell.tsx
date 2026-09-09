@@ -13,6 +13,7 @@ export function PageShell({ children }: { children: ReactNode }) {
         <nav aria-label="Main navigation">
           <a href="#home">Home</a>
           <a href="#service-preview">Service preview</a>
+          <a href="#provider-onboarding">Provider onboarding demo</a>
           <a href="#how-it-works">How it works</a>
         </nav>
       </header>
