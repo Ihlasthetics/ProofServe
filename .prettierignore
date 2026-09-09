@@ -4,3 +4,5 @@ node_modules/
 package-lock.json
 # Preserve the supplied authoritative context verbatim.
 docs/ProofServe-Team-Build-Playbook.md
+apps/web/next-env.d.ts
+apps/web/.next/
