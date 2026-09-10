@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import {
   TriageResultSchema,
   type TriageInput,
@@ -7,6 +8,7 @@ import { x402Client, x402HTTPClient } from '@x402/core/client';
 import {
   decodePaymentRequiredHeader,
   decodePaymentResponseHeader,
+  encodePaymentResponseHeader,
   encodePaymentSignatureHeader,
 } from '@x402/core/http';
 import type { FacilitatorClient } from '@x402/core/server';
@@ -631,6 +633,194 @@ describe('x402 payment gate', () => {
 });
 
 describe('guarded real-payment smoke client', () => {
+  const loadSmokeDiagnosticsModule = async () => {
+    const smokeScriptUrl = new URL(
+      '../scripts/real-payment-smoke.mjs',
+      import.meta.url,
+    ).href;
+    return (await import(smokeScriptUrl)) as unknown as {
+      formatPaidFailureDiagnostics(options: {
+        paidBody: unknown;
+        paidResponse: Response;
+        httpClient: x402HTTPClient;
+      }): string;
+    };
+  };
+
+  it('formats only allowlisted smoke failure diagnostics', async () => {
+    const smokeScriptUrl = new URL(
+      '../scripts/real-payment-smoke.mjs',
+      import.meta.url,
+    ).href;
+    const smokeModule = (await import(smokeScriptUrl)) as unknown as {
+      formatSmokeFailure(context: {
+        stage: string;
+        httpStatus?: number;
+      }): string;
+    };
+    const sentinel = 'SENSITIVE_RAW_SMOKE_ERROR';
+
+    expect(
+      smokeModule.formatSmokeFailure({ stage: 'signer initialization' }),
+    ).toBe('Real-payment smoke test failed. Stage: signer initialization.');
+    expect(
+      smokeModule.formatSmokeFailure({
+        stage: 'paid request',
+        httpStatus: 503,
+      }),
+    ).toBe(
+      'Real-payment smoke test failed. Stage: paid request. HTTP status: 503.',
+    );
+    expect(
+      smokeModule.formatSmokeFailure({
+        stage: sentinel,
+        httpStatus: 999,
+      }),
+    ).toBe('Real-payment smoke test failed. Stage: configuration.');
+  });
+
+  it('parses a fictional raw payer key explicitly as ECDSA', async () => {
+    const fictionalRawPrivateKey =
+      '0000000000000000000000000000000000000000000000000000000000000001';
+    const smokeScriptUrl = new URL(
+      '../scripts/real-payment-smoke.mjs',
+      import.meta.url,
+    ).href;
+    const smokeModule = (await import(smokeScriptUrl)) as unknown as {
+      parseSmokePayerPrivateKey(value: string): {
+        readonly type: string;
+      };
+    };
+    const explicitEcdsaKey = smokeModule.parseSmokePayerPrivateKey(
+      fictionalRawPrivateKey,
+    );
+    const smokeScriptSource = await readFile(
+      new URL('../scripts/real-payment-smoke.mjs', import.meta.url),
+      'utf8',
+    );
+
+    expect(explicitEcdsaKey.type).toBe('secp256k1');
+    expect(smokeScriptSource).toContain(
+      'PrivateKey.fromStringECDSA(payerPrivateKey)',
+    );
+    expect(smokeScriptSource).not.toContain(
+      'PrivateKey.fromString(payerPrivateKey)',
+    );
+    expect(smokeScriptSource).toContain(
+      'parseSmokePayerPrivateKey(payerPrivateKey)',
+    );
+    expect(() =>
+      smokeModule.parseSmokePayerPrivateKey('fictional-invalid-ecdsa-key'),
+    ).toThrow();
+  });
+
+  it.each(['SERVICE_EXECUTION_FAILED', 'PAYMENT_FAILED'])(
+    'reports allowlisted paid-response error code %s',
+    async (code) => {
+      const smokeModule = await loadSmokeDiagnosticsModule();
+      const diagnostics = smokeModule.formatPaidFailureDiagnostics({
+        paidBody: { error: { code, message: 'Fictional safe message.' } },
+        paidResponse: new Response(null, { status: 502 }),
+        httpClient: new x402HTTPClient(new x402Client()),
+      });
+
+      expect(diagnostics).toBe(`Paid response error code: ${code}`);
+      expect(diagnostics).not.toContain('Fictional safe message.');
+    },
+  );
+
+  it('does not leak unknown or malformed paid-response bodies', async () => {
+    const sentinel = 'SENSITIVE_UNKNOWN_PAID_RESPONSE';
+    const smokeModule = await loadSmokeDiagnosticsModule();
+    const response = new Response(null, { status: 502 });
+    const httpClient = new x402HTTPClient(new x402Client());
+    const bodies: unknown[] = [
+      sentinel,
+      { error: sentinel },
+      { error: { code: `UNKNOWN_${sentinel}`, message: sentinel } },
+      { error: { code: 502, message: sentinel } },
+    ];
+
+    for (const paidBody of bodies) {
+      const diagnostics = smokeModule.formatPaidFailureDiagnostics({
+        paidBody,
+        paidResponse: response,
+        httpClient,
+      });
+      expect(diagnostics).toBe('Paid response error code: unavailable');
+      expect(diagnostics).not.toContain(sentinel);
+    }
+  });
+
+  it('retains validated settlement evidence from a 502 response', async () => {
+    const smokeModule = await loadSmokeDiagnosticsModule();
+    const settlementHeader = encodePaymentResponseHeader({
+      success: true,
+      transaction: TEST_TRANSACTION_ID,
+      network: 'hedera:testnet',
+    });
+    const paidResponse = new Response(null, {
+      status: 502,
+      headers: { 'payment-response': settlementHeader },
+    });
+
+    expect(
+      smokeModule.formatPaidFailureDiagnostics({
+        paidBody: { error: { code: 'SERVICE_EXECUTION_FAILED' } },
+        paidResponse,
+        httpClient: new x402HTTPClient(new x402Client()),
+      }),
+    ).toBe(
+      [
+        'Paid response error code: SERVICE_EXECUTION_FAILED',
+        `Settlement transaction: ${TEST_TRANSACTION_ID}`,
+        'HashScan: https://hashscan.io/testnet/transaction/0.0.7162784-1788940800-123456789',
+      ].join('\n'),
+    );
+  });
+
+  it.each([
+    ['a malformed settlement header', 'SENSITIVE_MALFORMED_SETTLEMENT_HEADER'],
+    [
+      'an unsafe settlement transaction',
+      encodePaymentResponseHeader({
+        success: true,
+        transaction: '0.0.1@1.2\r\nSENSITIVE_UNSAFE_TRANSACTION',
+        network: 'hedera:testnet',
+      }),
+    ],
+  ])('never prints %s', async (_name, settlementHeader) => {
+    const smokeModule = await loadSmokeDiagnosticsModule();
+    const diagnostics = smokeModule.formatPaidFailureDiagnostics({
+      paidBody: { error: { code: 'SERVICE_EXECUTION_FAILED' } },
+      paidResponse: new Response(null, {
+        status: 502,
+        headers: { 'payment-response': settlementHeader },
+      }),
+      httpClient: new x402HTTPClient(new x402Client()),
+    });
+
+    expect(diagnostics).toBe(
+      'Paid response error code: SERVICE_EXECUTION_FAILED',
+    );
+    expect(diagnostics).not.toContain(settlementHeader);
+    expect(diagnostics).not.toContain('SENSITIVE');
+  });
+
+  it('cannot execute a request or payment when smoke helpers are imported', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('A request must not be attempted.'));
+    const smokeScriptUrl = new URL(
+      `../scripts/real-payment-smoke.mjs?import-safety=${Date.now()}`,
+      import.meta.url,
+    ).href;
+
+    await import(smokeScriptUrl);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('signs only the exact configured Hedera HBAR requirement', async () => {
     const smokeScriptUrl = new URL(
       '../scripts/real-payment-smoke.mjs',

@@ -22,25 +22,28 @@ const expectedSchema = {
   additionalProperties: false,
 };
 
+function interactionResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 function modelResponse(output: unknown): Response {
-  return new Response(
-    JSON.stringify({
-      status: 'completed',
-      steps: [
-        {
-          type: 'model_output',
-          content: [
-            {
-              type: 'text',
-              text:
-                typeof output === 'string' ? output : JSON.stringify(output),
-            },
-          ],
-        },
-      ],
-    }),
-    { status: 200, headers: { 'content-type': 'application/json' } },
-  );
+  return interactionResponse({
+    status: 'completed',
+    steps: [
+      {
+        type: 'model_output',
+        content: [
+          {
+            type: 'text',
+            text: typeof output === 'string' ? output : JSON.stringify(output),
+          },
+        ],
+      },
+    ],
+  });
 }
 
 afterEach(() => {
@@ -96,6 +99,98 @@ describe('GeminiTriageEngine', () => {
     expect(result).toEqual(validResult);
     expect(TriageResultSchema.safeParse(result).success).toBe(true);
     expect(fakeFetch).toHaveBeenCalledOnce();
+  });
+
+  it('ignores unrelated steps and non-text direct content', async () => {
+    const engine = new GeminiTriageEngine({
+      apiKey: 'fictional-placeholder',
+      model: 'configured-model',
+      fetchImplementation: vi.fn<typeof fetch>(async () =>
+        interactionResponse({
+          status: 'completed',
+          steps: [
+            {
+              type: 'function_call',
+              content: [{ type: 'text', text: 'not-json' }],
+            },
+            {
+              type: 'model_output',
+              content: [
+                { type: 'image', text: 'not-json' },
+                { type: 'text', text: JSON.stringify(validResult) },
+              ],
+            },
+          ],
+        }),
+      ),
+    });
+
+    await expect(engine.triage({ ticket: 'Help' })).resolves.toEqual(
+      validResult,
+    );
+  });
+
+  it.each([
+    ['a non-completed status', { status: 'in_progress', steps: [] }],
+    ['missing steps', { status: 'completed' }],
+    ['malformed steps', { status: 'completed', steps: {} }],
+    [
+      'malformed direct content',
+      {
+        status: 'completed',
+        steps: [{ type: 'model_output', content: {} }],
+      },
+    ],
+    [
+      'malformed direct content items',
+      {
+        status: 'completed',
+        steps: [
+          {
+            type: 'model_output',
+            content: [null, { type: 'text', text: 42 }],
+          },
+        ],
+      },
+    ],
+    [
+      'missing model-output text',
+      {
+        status: 'completed',
+        steps: [
+          {
+            type: 'model_output',
+            content: [{ type: 'text' }],
+          },
+        ],
+      },
+    ],
+    [
+      'the undocumented nested model-output shape',
+      {
+        status: 'completed',
+        steps: [
+          {
+            type: 'model_output',
+            model_output: {
+              content: [{ type: 'text', text: JSON.stringify(validResult) }],
+            },
+          },
+        ],
+      },
+    ],
+  ])('fails closed for %s', async (_name, providerResponse) => {
+    const engine = new GeminiTriageEngine({
+      apiKey: 'fictional-placeholder',
+      model: 'configured-model',
+      fetchImplementation: vi.fn<typeof fetch>(async () =>
+        interactionResponse(providerResponse),
+      ),
+    });
+
+    await expect(engine.triage({ ticket: 'Help' })).rejects.toEqual(
+      new TriageEngineError(),
+    );
   });
 
   it.each([
