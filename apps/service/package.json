@@ -10,8 +10,16 @@
     }
   },
   "scripts": {
+    "start": "node dist/server.js",
+    "smoke:real-payment": "node scripts/real-payment-smoke.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@proofserve/shared": "0.0.0",
+    "@x402/core": "2.25.0",
+    "@x402/hedera": "2.25.0",
+    "fastify": "5.12.3"
   }
 }
