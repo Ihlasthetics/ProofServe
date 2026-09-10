@@ -4,6 +4,7 @@ import {
 } from '@proofserve/shared';
 import { PageShell } from '../components/page-shell';
 import { ServiceCard } from '../components/service-card';
+import { ProviderOnboarding } from '../components/provider-onboarding';
 
 export default function Page() {
   return (
@@ -32,6 +33,7 @@ export default function Page() {
           provider={verifiedProviderFixture}
         />
       </section>
+      <ProviderOnboarding />
       <section id="how-it-works" aria-labelledby="how-heading">
         <p className="eyebrow">The intended future flow</p>
         <h2 id="how-heading">How it works</h2>
