@@ -83,7 +83,7 @@ function parseGeminiApiKey(value: string): string {
     value.length < 16 ||
     value.length > 512 ||
     value !== value.trim() ||
-    !/^[A-Za-z0-9_-]+$/.test(value)
+    !/^[\x21-\x7e]+$/.test(value)
   ) {
     throw new ServiceConfigurationError();
   }
