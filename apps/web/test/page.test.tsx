@@ -15,7 +15,7 @@ import { ServiceCard } from '../src/components/service-card';
 
 const markup = renderToStaticMarkup(<Page />);
 const warning =
-  'Wireframe uses fictional development/test content. It is not evidence of completed verification or payment.';
+  'Provider and draft-service registration use the live registry. Registration does not establish verification or payment eligibility.';
 
 it('renders semantic landmarks and links to existing page targets', () => {
   for (const tag of ['header', 'nav', 'main', 'footer']) {
@@ -40,6 +40,13 @@ it('renders the shared service and matching provider with shared prop types', ()
     Parameters<typeof ServiceCard>[0]['provider']
   >().toEqualTypeOf<Provider>();
   expect(activeServiceFixture.providerId).toBe(verifiedProviderFixture.id);
+  const card = renderToStaticMarkup(
+    <ServiceCard
+      service={activeServiceFixture}
+      provider={verifiedProviderFixture}
+      referenceTime={fixtureReferenceTime}
+    />,
+  );
   for (const value of [
     activeServiceFixture.name,
     activeServiceFixture.description,
@@ -47,19 +54,17 @@ it('renders the shared service and matching provider with shared prop types', ()
     activeServiceFixture.paymentRequirements.network,
     verifiedProviderFixture.displayName,
     fixtureReferenceTime,
-  ]) {
-    expect(markup).toContain(value);
-  }
-  expect(markup).toContain('0.01 HBAR — fictional example');
-  expect(markup).toContain('Service: Active');
-  expect(markup).toContain('Liveness verified');
-  expect(markup).toContain('fictional reference scenario');
+    '0.01 HBAR',
+    'Service: Active',
+    'Liveness verified',
+  ])
+    expect(card).toContain(value);
 });
 
 it('places the visible warning immediately after the heading and preserves boundaries', () => {
   expect(markup).toContain(`</h1><p class="notice">${warning}</p>`);
-  expect(markup).toContain('Fictional development/test service preview');
-  expect(markup).toContain('Real integrations are not implemented.');
+  expect(markup).toContain('Provider onboarding');
+  expect(markup).toContain('Registry registration is connected.');
   expect(markup).toContain('ProofServe — planned Hedera testnet demo');
   expect(markup).toContain(
     'Verification describes recent liveness, not a service-quality guarantee.',
@@ -67,7 +72,7 @@ it('places the visible warning immediately after the heading and preserves bound
   expect(markup).not.toMatch(
     /trusted|scam-free|globally unique|unique human|bot-proof|bots cannot enter|bots can never enter/i,
   );
-  expect(markup).not.toMatch(/<(?:button|form|input)\b/);
+  expect(markup).toContain('type="submit"');
 });
 
 it('renders supplied props instead of privately copied fixtures', () => {
@@ -79,6 +84,7 @@ it('renders supplied props instead of privately copied fixtures', () => {
     createElement(ServiceCard, {
       service: alternate,
       provider: verifiedProviderFixture,
+      referenceTime: fixtureReferenceTime,
     }),
   );
   expect(rendered).toContain(alternate.name);
@@ -88,6 +94,7 @@ it('renders supplied props instead of privately copied fixtures', () => {
       <ServiceCard
         service={{ ...activeServiceFixture, providerId: 'mismatch' }}
         provider={verifiedProviderFixture}
+        referenceTime={fixtureReferenceTime}
       />,
     ),
   ).toThrow('Service and provider must match.');
@@ -115,4 +122,17 @@ it('does not declare private Provider or ServiceListing types', () => {
     };
     inspect(source);
   }
+});
+
+it('associates each form input with a label and uses native keyboard controls', () => {
+  const ids = [...markup.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+  expect(new Set(ids).size).toBe(ids.length);
+  for (const [, target] of markup.matchAll(
+    /(?:aria-labelledby|aria-describedby|for)="([^"]+)"/g,
+  ))
+    expect(ids).toContain(target);
+  for (const [, id] of markup.matchAll(/<(?:input|textarea)[^>]*id="([^"]+)"/g))
+    expect(markup).toContain(`for="${id}"`);
+  expect(markup).toContain('<fieldset disabled="">');
+  expect(markup).not.toMatch(/tabindex="[1-9]/);
 });

@@ -13,8 +13,7 @@ export function ProviderVerificationBadge({
     referenceTime < verification.expiresAt;
   return (
     <span className="badge">
-      {current ? 'Liveness verified' : 'No current liveness verification'} —
-      fictional reference scenario
+      {current ? 'Liveness verified' : 'No current liveness verification'}
     </span>
   );
 }
