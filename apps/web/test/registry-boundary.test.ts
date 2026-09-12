@@ -9,11 +9,14 @@ import {
 import { registryBoundary } from '../src/server/registry-boundary';
 import * as route from '../src/app/api/[...registry]/route';
 
-const providerBody = { displayName: 'Operator', payoutAccount: '0.0.123457' };
+const providerBody = {
+  displayName: unverifiedProviderFixture.displayName,
+  payoutAccount: '0.0.123457',
+};
 const serviceBody = {
   providerId: unverifiedProviderFixture.id,
-  name: 'Triage',
-  description: 'Support',
+  name: draftServiceFixture.name,
+  description: draftServiceFixture.description,
   capability: 'SUPPORT_TICKET_TRIAGE',
   price: { network: 'hedera:testnet', asset: '0.0.0', amountAtomic: '1000000' },
 };

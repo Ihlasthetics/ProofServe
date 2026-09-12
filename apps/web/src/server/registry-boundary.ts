@@ -16,6 +16,11 @@ import {
   ServiceParamsSchema,
   type ApiErrorCode,
 } from '@proofserve/shared';
+import {
+  bindsProvider,
+  bindsDraft,
+  bindsActivationId,
+} from '../lib/registry-binding';
 
 // Imported only by the server route. No request value controls this setting.
 function registryOrigin() {
@@ -174,8 +179,7 @@ export async function registryBoundary(
       const parsed = ActivateServiceResponseSchema.safeParse(data);
       return upstream.status === 200 &&
         parsed.success &&
-        parsed.data.id === id &&
-        parsed.data.status === 'ACTIVE'
+        bindsActivationId(id, parsed.data)
         ? json(parsed.data, 200)
         : failure();
     }
@@ -183,7 +187,7 @@ export async function registryBoundary(
       const parsed = CreateProviderResponseSchema.safeParse(data);
       return upstream.status === 201 &&
         parsed.success &&
-        parsed.data.verification.status === 'UNVERIFIED'
+        bindsProvider(CreateProviderRequestSchema.parse(body), parsed.data)
         ? json(parsed.data, 201)
         : failure();
     }
@@ -192,8 +196,7 @@ export async function registryBoundary(
       const input = CreateServiceRequestSchema.parse(body);
       return upstream.status === 201 &&
         parsed.success &&
-        parsed.data.status === 'DRAFT' &&
-        parsed.data.providerId === input.providerId
+        bindsDraft(input, parsed.data)
         ? json(parsed.data, 201)
         : failure();
     }

@@ -13,7 +13,7 @@ import { RegistryView } from '../src/components/provider-onboarding';
 const activated = {
   ...draftServiceFixture,
   status: 'ACTIVE' as const,
-  name: 'Authoritative activated service',
+  updatedAt: '2026-09-06T10:01:00.000Z',
 };
 const verified = {
   ...unverifiedProviderFixture,
@@ -35,12 +35,12 @@ async function setup() {
     () => fixtureReferenceTime,
   );
   await session.createProvider({
-    displayName: 'Operator',
-    payoutAccount: '0.0.123',
+    displayName: unverifiedProviderFixture.displayName,
+    payoutAccount: unverifiedProviderFixture.payoutAccount,
   });
   await session.createDraft({
-    name: 'Triage',
-    description: 'Support',
+    name: draftServiceFixture.name,
+    description: draftServiceFixture.description,
     capability: 'SUPPORT_TICKET_TRIAGE',
     price: {
       network: 'hedera:testnet',
@@ -69,7 +69,7 @@ it('reflects validated activation state and reconciles listing without inventing
     <RegistryView state={session.getSnapshot()} session={session} />,
   );
   expect(markup).toContain(
-    'Registry confirmed activation: Authoritative activated service',
+    `Registry confirmed activation: ${draftServiceFixture.name}`,
   );
   expect(markup).toContain('Service: Active');
   expect(markup).not.toContain('Service: Draft');
@@ -145,7 +145,7 @@ it('discards an in-flight pre-activation listing and performs a fresh post-activ
   expect(snapshots.filter(Boolean)).not.toContainEqual({ services: [] });
   expect(fetcher).toHaveBeenCalledTimes(5);
 });
-it('uses listingCheckedAt consistently across unrelated renders instead of a competing clock', async () => {
+it('clears old eligibility after blocked activation without advancing listingCheckedAt', async () => {
   const { fetcher, session } = await setup();
   fetcher.mockResolvedValueOnce(json(listing));
   await session.refresh();
@@ -165,7 +165,7 @@ it('uses listingCheckedAt consistently across unrelated renders instead of a com
   const after = renderToStaticMarkup(
     <RegistryView state={session.getSnapshot()} session={session} />,
   );
-  expect(after).toContain('1 eligible services returned.');
-  expect(after).toContain(`dateTime="${fixtureReferenceTime}"`);
+  expect(after).not.toContain('1 eligible services returned.');
+  expect(after).not.toContain(`dateTime="${fixtureReferenceTime}"`);
   expect(session.getSnapshot().listingCheckedAt).toBe(fixtureReferenceTime);
 });

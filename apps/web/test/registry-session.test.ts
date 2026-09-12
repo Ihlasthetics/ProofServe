@@ -6,10 +6,13 @@ import {
 import { createRegistryClient } from '../src/lib/registry-client';
 import { createRegistrySession } from '../src/lib/registry-session';
 
-const input = { displayName: 'Operator', payoutAccount: '0.0.123' };
+const input = {
+  displayName: unverifiedProviderFixture.displayName,
+  payoutAccount: unverifiedProviderFixture.payoutAccount,
+};
 const draft = {
-  name: 'Triage',
-  description: 'Support',
+  name: draftServiceFixture.name,
+  description: draftServiceFixture.description,
   capability: 'SUPPORT_TICKET_TRIAGE' as const,
   price: {
     network: 'hedera:testnet' as const,

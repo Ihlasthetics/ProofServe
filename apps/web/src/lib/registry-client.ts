@@ -8,10 +8,20 @@ import {
   CreateServiceResponseSchema,
   ListServicesResponseSchema,
   ServiceParamsSchema,
+  ProviderSchema,
+  ServiceListingSchema,
   type ApiErrorCode,
   type CreateProviderRequest,
   type CreateServiceRequest,
+  type Provider,
+  type ServiceListing,
 } from '@proofserve/shared';
+import {
+  bindsProvider,
+  bindsDraft,
+  bindsDraftProvider,
+  bindsActivation,
+} from './registry-binding';
 
 // Error bodies are validated, but arbitrary backend text is never rendered.
 const safeErrors: Partial<Record<ApiErrorCode, string>> = {
@@ -100,38 +110,48 @@ export function createRegistryClient(fetcher: typeof fetch = fetch) {
         CreateProviderResponseSchema,
         parsed.data,
       );
-      if (provider.verification.status !== 'UNVERIFIED')
+      if (!bindsProvider(parsed.data, provider))
         throw new RegistryRequestError(
-          `Unexpected provider verification status. No local success was applied. ${uncertainMutation}`,
+          `Unexpected provider response. No local success was applied. ${uncertainMutation}`,
         );
       return provider;
     },
-    async createService(input: CreateServiceRequest) {
+    async createService(input: CreateServiceRequest, provider: Provider) {
       const parsed = CreateServiceRequestSchema.safeParse(input);
       if (!parsed.success)
         throw new RegistryRequestError(
           'Enter a service name (1–120 characters), description (1–1000 characters), and a positive whole-number price in tinybars.',
+        );
+      const owner = ProviderSchema.parse(provider);
+      if (parsed.data.providerId !== owner.id)
+        throw new RegistryRequestError(
+          'The draft must belong to the created provider.',
         );
       const service = await request(
         '/api/services',
         CreateServiceResponseSchema,
         parsed.data,
       );
-      if (service.status !== 'DRAFT' || service.providerId !== input.providerId)
+      if (
+        !bindsDraft(parsed.data, service) ||
+        !bindsDraftProvider(owner, service)
+      )
         throw new RegistryRequestError(
           `Unexpected draft-service response. No local success was applied. ${uncertainMutation}`,
         );
       return service;
     },
     listServices: () => request('/api/services', ListServicesResponseSchema),
-    async activateService(id: string) {
+    async activateService(draft: ServiceListing) {
+      const expected = ServiceListingSchema.parse(draft);
+      const id = expected.id;
       const service = await request(
         `/api/services/${encodeURIComponent(ServiceParamsSchema.parse({ id }).id)}/activate`,
         ActivateServiceResponseSchema,
         ActivateServiceRequestSchema.parse({}),
         200,
       );
-      if (service.id !== id || service.status !== 'ACTIVE')
+      if (!bindsActivation(expected, service))
         throw new RegistryRequestError(
           `Unexpected activation response. No local success was applied. ${uncertainMutation}`,
         );

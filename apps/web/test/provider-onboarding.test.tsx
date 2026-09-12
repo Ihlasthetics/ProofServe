@@ -10,10 +10,13 @@ import { createRegistryClient } from '../src/lib/registry-client';
 import { createRegistrySession } from '../src/lib/registry-session';
 import { RegistryView } from '../src/components/provider-onboarding';
 
-const providerInput = { displayName: 'Operator', payoutAccount: '0.0.123457' };
+const providerInput = {
+  displayName: unverifiedProviderFixture.displayName,
+  payoutAccount: '0.0.123457',
+};
 const draftInput = {
-  name: 'Triage',
-  description: 'Support triage',
+  name: draftServiceFixture.name,
+  description: draftServiceFixture.description,
   capability: 'SUPPORT_TICKET_TRIAGE' as const,
   price: {
     network: 'hedera:testnet' as const,
@@ -65,7 +68,10 @@ it('creates a real provider and draft with authoritative request bodies and serv
 
 it.each([
   { displayName: '', payoutAccount: '0.0.123457' },
-  { displayName: 'Operator', payoutAccount: 'private-key' },
+  {
+    displayName: unverifiedProviderFixture.displayName,
+    payoutAccount: 'private-key',
+  },
 ])('validates provider inputs before sending', async (input) => {
   const { fetcher, session, view } = setup();
   await session.createProvider(input);

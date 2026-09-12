@@ -46,10 +46,11 @@ function browser(body: ReadableStream<Uint8Array>, length?: string) {
 function padded(json: string, size: number) {
   return encoder.encode(json + ' '.repeat(size - encoder.encode(json).length));
 }
-const provider = JSON.stringify({
+const providerInput = {
   displayName: 'Operator 🌍',
   payoutAccount: '0.0.123',
-});
+};
+const provider = JSON.stringify(providerInput);
 function safe(response: Response) {
   expect(response.headers.get('Content-Type')).toBe(
     'application/json; charset=utf-8',
@@ -63,10 +64,16 @@ it.each([-1, 0, 1])(
   async (delta) => {
     const input = stream(padded(provider, REGISTRY_REQUEST_BYTES + delta), 137);
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify(unverifiedProviderFixture), {
-        status: 201,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+      new Response(
+        JSON.stringify({
+          ...unverifiedProviderFixture,
+          ...providerInput,
+        }),
+        {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
     );
     const parse = vi.spyOn(CreateProviderRequestSchema, 'safeParse');
     const response = await registryBoundary(browser(input.body, '1'), fetcher);
@@ -120,10 +127,13 @@ it.each([-1, 0, 1])(
 it('accepts multibyte browser fields split across single-byte chunks without Content-Length', async () => {
   const input = stream(encoder.encode(provider), 1);
   const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-    new Response(JSON.stringify(unverifiedProviderFixture), {
-      status: 201,
-      headers: { 'Content-Type': 'application/json' },
-    }),
+    new Response(
+      JSON.stringify({ ...unverifiedProviderFixture, ...providerInput }),
+      {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    ),
   );
   expect((await registryBoundary(browser(input.body), fetcher)).status).toBe(
     201,
@@ -230,7 +240,17 @@ it('decodes upstream multibyte JSON split across byte boundaries without declare
     }),
   );
   const response = await registryBoundary(
-    browser(stream(encoder.encode(provider), 1).body),
+    browser(
+      stream(
+        encoder.encode(
+          JSON.stringify({
+            displayName: returned.displayName,
+            payoutAccount: returned.payoutAccount,
+          }),
+        ),
+        1,
+      ).body,
+    ),
     fetcher,
   );
   expect(response.status).toBe(201);

@@ -59,8 +59,9 @@ export function createRegistrySession(
   }
   let listingRequest: Promise<void> | null = null;
   let listingVersion = 0;
+  let activationResponsePending = false;
   function refresh(): Promise<void> {
-    if (listingRequest) return Promise.resolve();
+    if (listingRequest || activationResponsePending) return Promise.resolve();
     const version = ++listingVersion;
     listingRequest = run('listing', async () => {
       update({ listing: null });
@@ -91,10 +92,13 @@ export function createRegistrySession(
       if (!provider || state.draft) return Promise.resolve();
       return run('draft', async () => {
         update({
-          draft: await client.createService({
-            ...input,
-            providerId: provider.id,
-          }),
+          draft: await client.createService(
+            {
+              ...input,
+              providerId: provider.id,
+            },
+            provider,
+          ),
         });
       });
     },
@@ -102,11 +106,17 @@ export function createRegistrySession(
       const draft = state.draft;
       if (!draft || draft.status === 'ACTIVE') return Promise.resolve();
       return run('activation', async () => {
-        const activated = await client.activateService(draft.id);
-        if (activated.providerId !== draft.providerId)
-          throw new RegistryRequestError(
-            'Unexpected activation provider. No local success was applied.',
-          );
+        // Invalidate snapshots (including in-flight reads) before attempting a
+        // mutation. A rejected response must not leave old eligibility visible.
+        ++listingVersion;
+        update({ listing: null });
+        activationResponsePending = true;
+        let activated: ServiceListing;
+        try {
+          activated = await client.activateService(draft);
+        } finally {
+          activationResponsePending = false;
+        }
         // The validated service is authoritative; it does not establish a provider
         // verification record or payment eligibility. Those require registry reads.
         ++listingVersion;
