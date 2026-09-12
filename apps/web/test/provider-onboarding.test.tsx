@@ -122,7 +122,7 @@ it('handles blocked activation without changing the provider or draft', async ()
   ).toBe(true);
 });
 
-it('rejects unexpected provider verification, active draft, and activation success', async () => {
+it('rejects unexpected provider verification, active draft, and mismatched activation', async () => {
   const { fetcher, session, view } = setup();
   fetcher.mockResolvedValueOnce(json(verifiedProviderFixture));
   await session.createProvider(providerInput);
@@ -137,10 +137,10 @@ it('rejects unexpected provider verification, active draft, and activation succe
   fetcher.mockResolvedValueOnce(json(draftServiceFixture));
   await session.createDraft(draftInput);
   fetcher.mockResolvedValueOnce(
-    json({ ...draftServiceFixture, status: 'ACTIVE' }),
+    json({ ...draftServiceFixture, status: 'ACTIVE', id: 'wrong-service' }),
   );
   await session.activate();
-  expect(view()).toContain('unexpected activation success');
+  expect(view()).toContain('Unexpected activation response');
   expect(view()).not.toMatch(/Service: Active|Liveness verified/);
 });
 
@@ -267,7 +267,7 @@ it('prevents duplicates during every pending operation and keeps controls access
   );
   await pending(
     () => session.activate(),
-    { ...draftServiceFixture, status: 'ACTIVE' },
+    { ...draftServiceFixture, status: 'ACTIVE', id: 'wrong-service' },
     'Activation check pending.',
   );
   await pending(

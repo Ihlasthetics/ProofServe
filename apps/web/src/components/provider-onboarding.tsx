@@ -26,13 +26,14 @@ export function RegistryView({
   state: RegistryState;
   session: ReturnType<typeof createRegistrySession>;
 }) {
-  const now = new Date().toISOString();
+  const checkedAt = state.listingCheckedAt;
   const eligible = state.listing?.services.filter(
     ({ service, provider }) =>
+      checkedAt !== null &&
       service.status === 'ACTIVE' &&
       provider.verification.status === 'VERIFIED' &&
-      provider.verification.verifiedAt <= now &&
-      now < provider.verification.expiresAt,
+      provider.verification.verifiedAt <= checkedAt &&
+      checkedAt < provider.verification.expiresAt,
   );
   return (
     <>
@@ -92,12 +93,14 @@ export function RegistryView({
               {state.pending.provider
                 ? 'Provider creation pending.'
                 : state.provider
-                  ? `Provider created: ${state.provider.displayName}. Unverified — no current liveness verification.`
+                  ? `Provider created: ${state.provider.displayName}. At registration: Unverified — no current liveness verification.`
                   : ''}
             </p>
             {state.provider && (
               <p>
-                Provider ID: <code>{state.provider.id}</code>
+                Provider ID: <code>{state.provider.id}</code>. This page did not
+                perform World verification; the registration record is not a
+                current verification check.
               </p>
             )}
             {state.errors.provider && (
@@ -160,7 +163,9 @@ export function RegistryView({
               {state.pending.draft
                 ? 'Draft creation pending.'
                 : state.draft
-                  ? `Draft created: ${state.draft.name}. Not discoverable or payable.`
+                  ? state.draft.status === 'ACTIVE'
+                    ? `Registry confirmed activation: ${state.draft.name}. Eligibility is shown only by a successful registry listing; this page did not perform World verification.`
+                    : `Draft created: ${state.draft.name}. Not discoverable or payable.`
                   : ''}
             </p>
             {state.errors.draft && (
@@ -180,18 +185,25 @@ export function RegistryView({
                 </p>
                 <button
                   type="button"
-                  disabled={!!state.pending.activation}
+                  disabled={
+                    !!state.pending.activation ||
+                    state.draft.status === 'ACTIVE'
+                  }
                   onClick={() => {
                     void session.activate();
                   }}
                 >
                   {state.pending.activation
                     ? 'Checking activation…'
-                    : 'Attempt activation'}
+                    : state.draft.status === 'ACTIVE'
+                      ? 'Registry service is active'
+                      : 'Attempt activation'}
                 </button>
                 <p role="status">
                   {state.pending.activation
-                    ? 'Activation check pending. Provider remains unverified; service remains draft.'
+                    ? state.draft.status === 'ACTIVE'
+                      ? 'Registry activation confirmed. Reconciling eligible services.'
+                      : 'Activation check pending. No provider verification was performed here.'
                     : ''}
                 </p>
               </div>

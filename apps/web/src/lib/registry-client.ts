@@ -37,6 +37,7 @@ export function createRegistryClient(fetcher: typeof fetch = fetch) {
     path: string,
     schema: { parse(value: unknown): T },
     body?: unknown,
+    expectedStatus?: number,
   ): Promise<T> {
     // A POST may have completed upstream even when its response is unavailable.
     const recovery =
@@ -78,6 +79,8 @@ export function createRegistryClient(fetcher: typeof fetch = fetch) {
       );
     }
     try {
+      if (expectedStatus !== undefined && response.status !== expectedStatus)
+        throw new Error('Unexpected status');
       return schema.parse(data);
     } catch {
       throw new RegistryRequestError(
@@ -121,11 +124,18 @@ export function createRegistryClient(fetcher: typeof fetch = fetch) {
       return service;
     },
     listServices: () => request('/api/services', ListServicesResponseSchema),
-    activateService: (id: string) =>
-      request(
+    async activateService(id: string) {
+      const service = await request(
         `/api/services/${encodeURIComponent(ServiceParamsSchema.parse({ id }).id)}/activate`,
         ActivateServiceResponseSchema,
         ActivateServiceRequestSchema.parse({}),
-      ),
+        200,
+      );
+      if (service.id !== id || service.status !== 'ACTIVE')
+        throw new RegistryRequestError(
+          `Unexpected activation response. No local success was applied. ${uncertainMutation}`,
+        );
+      return service;
+    },
   };
 }

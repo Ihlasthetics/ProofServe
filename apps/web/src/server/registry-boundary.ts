@@ -1,4 +1,10 @@
 import {
+  BoundedJsonError,
+  readBoundedJson,
+  REGISTRY_REQUEST_BYTES,
+  REGISTRY_RESPONSE_BYTES,
+} from './bounded-json';
+import {
   ActivateServiceRequestSchema,
   ActivateServiceResponseSchema,
   ApiErrorResponseSchema,
@@ -101,9 +107,14 @@ export async function registryBoundary(
         return failure('VALIDATION_ERROR');
       let input: unknown;
       try {
-        input = await request.json();
-      } catch {
-        return failure('VALIDATION_ERROR');
+        input = await readBoundedJson(request, REGISTRY_REQUEST_BYTES);
+      } catch (error) {
+        return failure(
+          'VALIDATION_ERROR',
+          error instanceof BoundedJsonError && error.reason === 'too-large'
+            ? 413
+            : 400,
+        );
       }
       const schema =
         id !== undefined
@@ -140,6 +151,7 @@ export async function registryBoundary(
       credentials: 'omit',
       signal: AbortSignal.timeout(10000),
     });
+    const data = await readBoundedJson(upstream, REGISTRY_RESPONSE_BYTES);
     if (
       upstream.headers
         .get('content-type')
@@ -148,7 +160,6 @@ export async function registryBoundary(
         .toLowerCase() !== 'application/json'
     )
       return failure();
-    const data: unknown = await upstream.json();
     if (!upstream.ok) {
       const parsed = ApiErrorResponseSchema.safeParse(data);
       if (

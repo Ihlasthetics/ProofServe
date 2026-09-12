@@ -57,6 +57,21 @@ export function createRegistrySession(
       update({ pending: { ...state.pending, [operation]: false } });
     }
   }
+  let listingRequest: Promise<void> | null = null;
+  let listingVersion = 0;
+  function refresh(): Promise<void> {
+    if (listingRequest) return Promise.resolve();
+    const version = ++listingVersion;
+    listingRequest = run('listing', async () => {
+      update({ listing: null });
+      const listing = await client.listServices();
+      if (version === listingVersion)
+        update({ listing, listingCheckedAt: now() });
+    }).finally(() => {
+      listingRequest = null;
+    });
+    return listingRequest;
+  }
   return {
     getSnapshot: () => state,
     subscribe(listener: () => void) {
@@ -85,22 +100,23 @@ export function createRegistrySession(
     },
     activate() {
       const draft = state.draft;
-      if (!draft) return Promise.resolve();
+      if (!draft || draft.status === 'ACTIVE') return Promise.resolve();
       return run('activation', async () => {
-        await client.activateService(draft.id);
-        // I03 has no verified provider flow. Even a schema-valid ACTIVE response
-        // cannot promote this unverified session or establish payment eligibility.
-        throw new RegistryRequestError(
-          'The registry returned an unexpected activation success for this unverified session. No local activation was applied.',
-        );
+        const activated = await client.activateService(draft.id);
+        if (activated.providerId !== draft.providerId)
+          throw new RegistryRequestError(
+            'Unexpected activation provider. No local success was applied.',
+          );
+        // The validated service is authoritative; it does not establish a provider
+        // verification record or payment eligibility. Those require registry reads.
+        ++listingVersion;
+        update({ draft: activated, listing: null });
+        // Discard any pre-activation listing and ensure reconciliation starts after
+        // activation, even when a user-triggered refresh was already pending.
+        await listingRequest;
+        await refresh();
       });
     },
-    refresh() {
-      return run('listing', async () => {
-        update({ listing: null });
-        const listing = await client.listServices();
-        update({ listing, listingCheckedAt: now() });
-      });
-    },
+    refresh,
   };
 }
