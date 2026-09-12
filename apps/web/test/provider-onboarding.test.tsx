@@ -1,3 +1,4 @@
+import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { expect, it, vi } from 'vitest';
 import {
@@ -5,10 +6,12 @@ import {
   draftServiceFixture,
   unverifiedProviderFixture,
   verifiedProviderFixture,
+  WorldVerificationResponseSchema,
 } from '@proofserve/shared';
 import { createRegistryClient } from '../src/lib/registry-client';
 import { createRegistrySession } from '../src/lib/registry-session';
 import { RegistryView } from '../src/components/provider-onboarding';
+import { registryBoundary } from '../src/server/registry-boundary';
 
 const providerInput = {
   displayName: unverifiedProviderFixture.displayName,
@@ -24,6 +27,13 @@ const draftInput = {
     amountAtomic: '1000000',
   },
 };
+const verifiedRecordForCreatedProvider = WorldVerificationResponseSchema.parse({
+  ...verifiedProviderFixture.verification,
+  providerId: unverifiedProviderFixture.id,
+});
+const mismatchedVerifiedRecord = WorldVerificationResponseSchema.parse(
+  verifiedProviderFixture.verification,
+);
 function setup() {
   const fetcher = vi.fn<typeof fetch>();
   const session = createRegistrySession(createRegistryClient(fetcher));
@@ -34,7 +44,72 @@ function setup() {
   return { fetcher, session, view };
 }
 const json = (data: unknown, status = 200) =>
-  new Response(JSON.stringify(data), { status });
+  new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+interface ButtonProps {
+  children?: ReactNode;
+  disabled?: boolean;
+  onClick?: () => void;
+}
+
+function textContent(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textContent).join('');
+  if (isValidElement<{ children?: ReactNode }>(node))
+    return textContent(node.props.children);
+  return '';
+}
+
+function findButton(node: ReactNode, label: string): ReactElement<ButtonProps> {
+  let found: ReactElement<ButtonProps> | undefined;
+  function visit(current: ReactNode) {
+    if (found !== undefined) return;
+    if (Array.isArray(current)) {
+      current.forEach(visit);
+      return;
+    }
+    if (!isValidElement<{ children?: ReactNode }>(current)) return;
+    if (
+      current.type === 'button' &&
+      textContent(current.props.children) === label
+    ) {
+      found = current as ReactElement<ButtonProps>;
+      return;
+    }
+    visit(current.props.children);
+  }
+  visit(node);
+  if (found === undefined) throw new Error(`Button not found: ${label}`);
+  return found;
+}
+
+async function eventually(assertion: () => void) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  assertion();
+}
+
+function boundarySetup() {
+  const upstream = vi.fn<typeof fetch>();
+  const browserFetch = vi.fn<typeof fetch>(async (input, init) => {
+    if (typeof input !== 'string') throw new Error('Unexpected request input');
+    return registryBoundary(
+      new Request(`http://web.example.test${input}`, init),
+      upstream,
+    );
+  });
+  const session = createRegistrySession(createRegistryClient(browserFetch));
+  return { browserFetch, session, upstream };
+}
 
 it('creates a real provider and draft with authoritative request bodies and server IDs', async () => {
   const { fetcher, session, view } = setup();
@@ -49,6 +124,13 @@ it('creates a real provider and draft with authoritative request bodies and serv
   );
   expect(view()).toContain(unverifiedProviderFixture.id);
   expect(view()).toContain('Unverified — no current liveness verification');
+  const worldAction = view().match(
+    /<section[^>]+aria-labelledby="provider-world-heading"[\s\S]*?<\/section>/,
+  )?.[0];
+  expect(worldAction).toBeDefined();
+  expect(worldAction).toContain('Verify with World');
+  expect(worldAction).toContain(unverifiedProviderFixture.id);
+  expect(worldAction).not.toContain('<input');
   fetcher.mockResolvedValueOnce(json(draftServiceFixture, 201));
   await session.createDraft(draftInput);
   expect(fetcher).toHaveBeenLastCalledWith(
@@ -63,7 +145,87 @@ it('creates a real provider and draft with authoritative request bodies and serv
   );
   expect(view()).toContain(draftServiceFixture.id);
   expect(view()).toContain('Service: Draft');
+  const activation = findButton(
+    RegistryView({ state: session.getSnapshot(), session }),
+    'Attempt activation',
+  );
+  expect(activation.props.disabled).not.toBe(true);
   expect(view()).not.toMatch(/Service: Active|Liveness verified/);
+});
+
+it('accepts only the created provider verification and never auto-activates', async () => {
+  const { fetcher, session, view } = setup();
+  fetcher
+    .mockResolvedValueOnce(json(unverifiedProviderFixture, 201))
+    .mockResolvedValueOnce(json(draftServiceFixture, 201));
+  await session.createProvider(providerInput);
+  await session.createDraft(draftInput);
+
+  expect(session.applyWorldVerification(verifiedRecordForCreatedProvider)).toBe(
+    true,
+  );
+  expect(session.getSnapshot().provider).toEqual({
+    ...unverifiedProviderFixture,
+    verification: verifiedRecordForCreatedProvider,
+  });
+  expect(session.getSnapshot().draft).toEqual(draftServiceFixture);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(view()).toContain('Verified — backend-confirmed');
+  expect(view()).toContain('Attempt activation');
+  expect(view()).toContain('activation still requires a separate explicit');
+  expect(view()).not.toContain('World verification confirmed');
+
+  const activated = {
+    ...draftServiceFixture,
+    status: 'ACTIVE' as const,
+    updatedAt: '2026-09-06T10:01:00.000Z',
+  };
+  fetcher
+    .mockResolvedValueOnce(json(activated))
+    .mockResolvedValueOnce(json({ services: [] }));
+  const activation = findButton(
+    RegistryView({ state: session.getSnapshot(), session }),
+    'Attempt activation',
+  );
+  expect(activation.props.disabled).not.toBe(true);
+  activation.props.onClick?.();
+  await eventually(() => {
+    expect(session.getSnapshot().draft).toEqual(activated);
+  });
+  expect(fetcher).toHaveBeenNthCalledWith(
+    3,
+    `/api/services/${draftServiceFixture.id}/activate`,
+    expect.objectContaining({ method: 'POST', body: '{}' }),
+  );
+  expect(fetcher).toHaveBeenNthCalledWith(
+    4,
+    '/api/services',
+    expect.objectContaining({ method: 'GET' }),
+  );
+  expect(session.getSnapshot().draft).toEqual(activated);
+});
+
+it('fails closed for mismatched or malformed verification records', async () => {
+  const { fetcher, session, view } = setup();
+  fetcher
+    .mockResolvedValueOnce(json(unverifiedProviderFixture, 201))
+    .mockResolvedValueOnce(json(draftServiceFixture, 201));
+  await session.createProvider(providerInput);
+  await session.createDraft(draftInput);
+  const original = session.getSnapshot().provider;
+
+  expect(session.applyWorldVerification(mismatchedVerifiedRecord)).toBe(false);
+  expect(
+    (session.applyWorldVerification as (value: unknown) => boolean)({
+      status: 'VERIFIED',
+      providerId: unverifiedProviderFixture.id,
+    }),
+  ).toBe(false);
+  expect(session.getSnapshot().provider).toEqual(original);
+  expect(session.getSnapshot().draft).toEqual(draftServiceFixture);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(view()).toContain('UNVERIFIED');
+  expect(view()).toContain('Attempt activation');
 });
 
 it.each([
@@ -93,9 +255,9 @@ it('displays a safe validation error without exposing backend text', async () =>
   expect(view()).not.toContain('secret stack trace');
 });
 
-it('handles blocked activation without changing the provider or draft', async () => {
-  const { fetcher, session, view } = setup();
-  fetcher
+it('lets an unverified provider click Activate through the production boundary and handles backend rejection', async () => {
+  const { browserFetch, session, upstream } = boundarySetup();
+  upstream
     .mockResolvedValueOnce(json(unverifiedProviderFixture, 201))
     .mockResolvedValueOnce(json(draftServiceFixture, 201))
     .mockResolvedValueOnce(
@@ -111,18 +273,52 @@ it('handles blocked activation without changing the provider or draft', async ()
     );
   await session.createProvider(providerInput);
   await session.createDraft(draftInput);
-  await session.activate();
-  expect(fetcher).toHaveBeenLastCalledWith(
+  expect(session.getSnapshot().provider?.verification.status).toBe(
+    'UNVERIFIED',
+  );
+  expect(session.getSnapshot().draft?.providerId).toBe(
+    unverifiedProviderFixture.id,
+  );
+
+  const rendered = RegistryView({ state: session.getSnapshot(), session });
+  const markup = renderToStaticMarkup(rendered);
+  expect(markup).toContain('Attempt activation');
+  const activation = findButton(rendered, 'Attempt activation');
+  expect(activation.props.disabled).not.toBe(true);
+  activation.props.onClick?.();
+
+  await eventually(() => {
+    expect(session.getSnapshot().errors.activation).toContain(
+      'Activation blocked: current provider verification is required.',
+    );
+  });
+  expect(browserFetch).toHaveBeenLastCalledWith(
     `/api/services/${draftServiceFixture.id}/activate`,
     expect.objectContaining({ method: 'POST', body: '{}' }),
   );
-  expect(view()).toContain(
+  expect(upstream).toHaveBeenNthCalledWith(
+    3,
+    `http://127.0.0.1:3001/api/services/${draftServiceFixture.id}/activate`,
+    expect.objectContaining({ method: 'POST', body: '{}' }),
+  );
+  expect(JSON.parse(String(upstream.mock.calls[1]?.[1]?.body))).toMatchObject({
+    providerId: unverifiedProviderFixture.id,
+  });
+
+  const rejectedMarkup = renderToStaticMarkup(
+    RegistryView({ state: session.getSnapshot(), session }),
+  );
+  expect(rejectedMarkup).toContain(
     'Activation blocked: current provider verification is required.',
   );
-  expect(view()).toContain('Service: Draft');
-  expect(view()).not.toMatch(/Service: Active|Liveness verified/);
+  expect(rejectedMarkup).toContain('Service: Draft');
+  expect(rejectedMarkup).not.toMatch(/Service: Active|Liveness verified/);
+  expect(session.getSnapshot().provider?.verification.status).toBe(
+    'UNVERIFIED',
+  );
+  expect(session.getSnapshot().draft?.status).toBe('DRAFT');
   expect(
-    fetcher.mock.calls.every(
+    browserFetch.mock.calls.every(
       ([path]) => !String(path).includes('/verification/'),
     ),
   ).toBe(true);
@@ -274,7 +470,7 @@ it('prevents duplicates during every pending operation and keeps controls access
   await pending(
     () => session.activate(),
     { ...draftServiceFixture, status: 'ACTIVE', id: 'wrong-service' },
-    'Activation check pending.',
+    'Activation request pending.',
   );
   await pending(
     () => session.refresh(),

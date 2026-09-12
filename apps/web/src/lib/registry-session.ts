@@ -1,9 +1,12 @@
-import type {
-  CreateProviderRequest,
-  CreateServiceRequest,
-  ListServicesResponse,
-  Provider,
-  ServiceListing,
+import {
+  ProviderSchema,
+  WorldVerificationResponseSchema,
+  type CreateProviderRequest,
+  type CreateServiceRequest,
+  type ListServicesResponse,
+  type Provider,
+  type ServiceListing,
+  type WorldVerificationResponse,
 } from '@proofserve/shared';
 import { createRegistryClient, RegistryRequestError } from './registry-client';
 
@@ -86,6 +89,26 @@ export function createRegistrySession(
       return run('provider', async () => {
         update({ provider: await client.createProvider(input) });
       });
+    },
+    applyWorldVerification(verificationInput: WorldVerificationResponse) {
+      const provider = state.provider;
+      const verification =
+        WorldVerificationResponseSchema.safeParse(verificationInput);
+      if (
+        provider === null ||
+        provider.verification.status !== 'UNVERIFIED' ||
+        !verification.success ||
+        verification.data.providerId !== provider.id
+      ) {
+        return false;
+      }
+      const updatedProvider = ProviderSchema.safeParse({
+        ...provider,
+        verification: verification.data,
+      });
+      if (!updatedProvider.success) return false;
+      update({ provider: updatedProvider.data });
+      return true;
     },
     createDraft(input: Omit<CreateServiceRequest, 'providerId'>) {
       const provider = state.provider;

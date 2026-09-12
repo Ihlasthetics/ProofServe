@@ -1,6 +1,7 @@
 import {
   IdentifierSchema,
   WorldVerificationRequestSchema,
+  WorldVerificationResponseSchema,
   type WorldVerificationContextResponse,
   type WorldVerificationResponse,
 } from '@proofserve/shared';
@@ -150,16 +151,24 @@ export class WorldSelfieFlow {
         message:
           'World completed. Waiting for ProofServe backend confirmation…',
       });
-      const verification = await this.dependencies.submitVerification(
+      const verificationResult = await this.dependencies.submitVerification(
         provider.data,
         result.data,
         signal,
       );
+      const verification =
+        WorldVerificationResponseSchema.safeParse(verificationResult);
+      if (
+        !verification.success ||
+        verification.data.providerId !== provider.data
+      ) {
+        throw new Error('Invalid verification response');
+      }
       this.update({
         status: 'verified',
         busy: true,
         message: 'VERIFIED — confirmed by the ProofServe backend.',
-        verification,
+        verification: verification.data,
       });
       return true;
     } catch {

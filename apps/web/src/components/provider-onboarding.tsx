@@ -13,6 +13,7 @@ import {
 import { providerFormData, draftFormData } from '../lib/onboarding-form-data';
 import { ServiceStatusBadge } from './service-status-badge';
 import { ServiceCard } from './service-card';
+import { ProviderWorldVerification } from './provider-world-verification';
 
 function fields(event: FormEvent<HTMLFormElement>) {
   event.preventDefault();
@@ -41,8 +42,9 @@ export function RegistryView({
         <p className="eyebrow">Live registry · Hedera testnet</p>
         <h2 id="onboarding-heading">Provider onboarding</h2>
         <p className="notice">
-          Registration does not verify a provider. World verification is not
-          available here. Draft services are not discoverable or payable.
+          Registration does not verify a provider. World verification and
+          activation are separate explicit actions; the registry decides every
+          activation request. Draft services are not discoverable or payable.
         </p>
         <p>
           Created records are kept in this page session. Reloading loses this
@@ -93,15 +95,38 @@ export function RegistryView({
               {state.pending.provider
                 ? 'Provider creation pending.'
                 : state.provider
-                  ? `Provider created: ${state.provider.displayName}. At registration: Unverified — no current liveness verification.`
+                  ? state.provider.verification.status === 'VERIFIED'
+                    ? `Provider created: ${state.provider.displayName}. Verified — backend-confirmed current liveness verification.`
+                    : `Provider created: ${state.provider.displayName}. At registration: Unverified — no current liveness verification.`
                   : ''}
             </p>
             {state.provider && (
-              <p>
-                Provider ID: <code>{state.provider.id}</code>. This page did not
-                perform World verification; the registration record is not a
-                current verification check.
-              </p>
+              <div>
+                <p>
+                  Provider ID: <code>{state.provider.id}</code>. Verification:{' '}
+                  <strong>{state.provider.verification.status}</strong>.
+                </p>
+                {state.provider.verification.status === 'VERIFIED' ? (
+                  <p>
+                    Backend-confirmed at{' '}
+                    <time dateTime={state.provider.verification.verifiedAt}>
+                      {state.provider.verification.verifiedAt}
+                    </time>
+                    ; expires at{' '}
+                    <time dateTime={state.provider.verification.expiresAt}>
+                      {state.provider.verification.expiresAt}
+                    </time>
+                    . World verification succeeded for this provider, but
+                    activation still requires a separate explicit request that
+                    the registry decides.
+                  </p>
+                ) : (
+                  <ProviderWorldVerification
+                    providerId={state.provider.id}
+                    onVerified={session.applyWorldVerification}
+                  />
+                )}
+              </div>
             )}
             {state.errors.provider && (
               <p role="alert" className="notice">
@@ -164,7 +189,9 @@ export function RegistryView({
                 ? 'Draft creation pending.'
                 : state.draft
                   ? state.draft.status === 'ACTIVE'
-                    ? `Registry confirmed activation: ${state.draft.name}. Eligibility is shown only by a successful registry listing; this page did not perform World verification.`
+                    ? state.provider?.verification.status === 'VERIFIED'
+                      ? `Registry confirmed activation: ${state.draft.name}. World verification succeeded separately, and activation followed a separate explicit registry request. Eligibility is shown only by a successful registry listing.`
+                      : `Registry confirmed activation: ${state.draft.name}. The local provider snapshot remains ${state.provider?.verification.status ?? 'unavailable'}; eligibility is shown only by a successful registry listing.`
                     : `Draft created: ${state.draft.name}. Not discoverable or payable.`
                   : ''}
             </p>
@@ -180,12 +207,14 @@ export function RegistryView({
                 </p>
                 <ServiceStatusBadge status={state.draft.status} />
                 <p>
-                  Activation requires current provider verification. You can ask
-                  the registry to check this gate.
+                  Activation is a separate explicit backend request. The
+                  registry authoritatively checks current provider verification
+                  and either activates or safely rejects it.
                 </p>
                 <button
                   type="button"
                   disabled={
+                    !state.provider ||
                     !!state.pending.activation ||
                     state.draft.status === 'ACTIVE'
                   }
@@ -203,7 +232,7 @@ export function RegistryView({
                   {state.pending.activation
                     ? state.draft.status === 'ACTIVE'
                       ? 'Registry activation confirmed. Reconciling eligible services.'
-                      : 'Activation check pending. No provider verification was performed here.'
+                      : 'Activation request pending. This separate request does not change the local World verification state.'
                     : ''}
                 </p>
               </div>

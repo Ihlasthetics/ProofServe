@@ -154,3 +154,17 @@
   color: var(--color-muted);
   font-size: var(--text-small);
 }
+
+.embedded {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.embedded h4 {
+  margin-bottom: 0.5rem;
+}
+
+.embedded .actions {
+  margin-block: 1rem;
+}
