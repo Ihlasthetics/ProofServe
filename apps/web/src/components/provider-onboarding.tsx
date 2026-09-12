@@ -249,7 +249,7 @@ export function RegistryView({
         <h2 id="preview-heading">Eligible services</h2>
         <p>
           Live registry snapshot. Discovery and payment require fresh server
-          checks; this page does not make payments.
+          checks; this listing does not initiate payments.
         </p>
         <button
           type="button"
