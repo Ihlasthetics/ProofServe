@@ -77,6 +77,124 @@ it('exports a World response with exactly the VERIFIED status type', () => {
   ).toBe(true);
 });
 
+it('accepts the exact IDKit Sandbox environment in World request contracts', () => {
+  const result = {
+    protocol_version: '3.0',
+    nonce: `0x${'11'.repeat(32)}`,
+    action: 'proofserve-provider-verification',
+    responses: [
+      {
+        identifier: 'selfie',
+        signal_hash: `0x${'22'.repeat(32)}`,
+        proof: `0x${'33'.repeat(256)}`,
+        merkle_root: `0x${'44'.repeat(32)}`,
+        nullifier: `0x${'55'.repeat(32)}`,
+      },
+    ],
+    user_presence_completed: true,
+    environment: 'sandbox',
+  };
+  expect(c.WorldVerificationRequestSchema.safeParse(result).success).toBe(true);
+  expect(
+    c.WorldVerificationRequestSchema.safeParse({
+      ...result,
+      environment: 'development',
+    }).success,
+  ).toBe(false);
+});
+
+const officialIntegrityBundleFixture = {
+  version: 1,
+  signature_format: 'android_keystore',
+  timestamp: 1_789_034_400,
+  signature: 'ab'.repeat(64),
+  jwt: 'eyJhbGciOiJFUzI1NiIsImtpZCI6ImZpY3Rpb25hbCJ9.eyJwYXNzIjp0cnVlfQ.ZmljdGlvbmFs',
+};
+
+function worldRequestWithIntegrity(integrityBundle: unknown) {
+  return {
+    protocol_version: '3.0',
+    nonce: `0x${'11'.repeat(32)}`,
+    action: 'proofserve-provider-verification',
+    responses: [
+      {
+        identifier: 'selfie',
+        signal_hash: `0x${'22'.repeat(32)}`,
+        proof: `0x${'33'.repeat(256)}`,
+        merkle_root: `0x${'44'.repeat(32)}`,
+        nullifier: `0x${'55'.repeat(32)}`,
+      },
+    ],
+    user_presence_completed: true,
+    environment: 'sandbox',
+    integrity_bundle: integrityBundle,
+  };
+}
+
+it.each([1, 2])(
+  'accepts official integrity bundle version %i with unprefixed hex',
+  (version) => {
+    const request = worldRequestWithIntegrity({
+      ...officialIntegrityBundleFixture,
+      version,
+    });
+    const parsed = c.WorldVerificationRequestSchema.parse(request);
+    expect(parsed.integrity_bundle).toEqual({
+      ...officialIntegrityBundleFixture,
+      version,
+    });
+  },
+);
+
+it.each([
+  [
+    'a 0x-prefixed signature',
+    { ...officialIntegrityBundleFixture, signature: '0x' + 'ab'.repeat(64) },
+  ],
+  ['an empty signature', { ...officialIntegrityBundleFixture, signature: '' }],
+  [
+    'an odd-length signature',
+    { ...officialIntegrityBundleFixture, signature: 'abc' },
+  ],
+  [
+    'a non-hex signature',
+    { ...officialIntegrityBundleFixture, signature: 'gg' },
+  ],
+  [
+    'an over-limit signature',
+    { ...officialIntegrityBundleFixture, signature: 'ab'.repeat(4097) },
+  ],
+  [
+    'an over-limit serialized bundle',
+    {
+      ...officialIntegrityBundleFixture,
+      signature: 'ab'.repeat(4000),
+      jwt: 'j'.repeat(256),
+    },
+  ],
+  ['an unsupported version', { ...officialIntegrityBundleFixture, version: 3 }],
+  [
+    'a missing field',
+    (({ jwt: removed, ...bundle }) => {
+      void removed;
+      return bundle;
+    })(officialIntegrityBundleFixture),
+  ],
+  [
+    'an unknown field',
+    { ...officialIntegrityBundleFixture, private_key: 'forbidden-test-marker' },
+  ],
+] as const)(
+  'rejects an integrity bundle with %s',
+  (_label, integrityBundle) => {
+    expect(
+      c.WorldVerificationRequestSchema.safeParse(
+        worldRequestWithIntegrity(integrityBundle),
+      ).success,
+    ).toBe(false);
+  },
+);
+
 it.each([
   c.VerifiedVerificationRecordSchema,
   c.ExpiredVerificationRecordSchema,

@@ -1,12 +1,19 @@
-# ProofServe API contract — Y01
+# ProofServe API contract — Y01 with Y04 World verification and Y05 agent runs
 
-These are planned contracts only. None of these endpoints, state transitions,
-authorization checks, verification operations, or payment operations is implemented
-in Y01. Zod schemas and inferred TypeScript types are exported from
-`@proofserve/shared`. All public objects, including nested objects, reject
-unexpected fields. Fields are required unless explicitly optional; nullable fields
-must be present as JSON null when no value exists. JSON schema annotations below
-are used by the documentation compatibility tests.
+Y01 defined the shared contracts; Y02 implemented the registry behavior, Y04
+implemented the World verification and activation gate, and Y05 implemented
+authenticated durable agent-run execution, PostgreSQL persistence, payment
+safety, and reconciliation. Zod schemas and inferred TypeScript types are
+exported from `@proofserve/shared`.
+All public objects, including nested objects, reject unexpected fields. Fields
+are required unless explicitly optional; nullable fields must be present as JSON
+null when no value exists. JSON schema annotations below are used by the
+documentation compatibility tests.
+
+The API JSON boundary rejects duplicate decoded object-member names before
+ordinary object construction, at every nesting level. This includes escaped
+equivalents such as `"action"` and `"\u0061ction"`. Parsing retains Fastify's
+1 MiB default body limit and adds a 64-container nesting limit.
 
 ## Common values and policy
 
@@ -202,22 +209,123 @@ Failures: 400 VALIDATION_ERROR (invalid account, missing fields, or supplied
 verification/status). Registration does not perform World verification or confer
 permission to activate a service. Payout changes will require re-verification.
 
-## POST /api/providers/:id/verification/world
+## POST /api/providers/:providerId/verification/world/request
+
+Purpose: obtain the signed RP context and public, provider-bound IDKit settings
+needed to launch the IDKit 4.x Selfie Check widget. Path id uses
+ProviderParamsSchema. The request is exactly an empty JSON object. The server
+derives `signal` from the validated provider id as
+`proofserve:provider:<providerId>` and signs only the configured World action.
+The client cannot choose the action, signal, app id, RP id, environment, or key.
+
+Request: WorldVerificationContextRequestSchema.
+
+<!-- schema: WorldVerificationContextRequestSchema -->
+
+```json
+{}
+```
+
+Success: 200, WorldVerificationContextResponseSchema. Pass `app_id`, `action`,
+`environment`, `rp_context`, `allow_legacy_proofs`, and
+`require_user_presence` to `IDKitRequestWidget`; pass `signal` to
+`selfieCheckLegacy({ signal })`. The pinned IDKit 4.2.4 client environments are
+`production`, `staging`, and `sandbox`; Sandbox configuration returns the
+exact `sandbox` destination needed by the Sandbox World application. The
+signing key is never public. Final I04 widget compatibility will be verified
+after I04 pins its frontend IDKit dependency.
+
+<!-- schema: WorldVerificationContextResponseSchema -->
+
+```json
+{
+  "app_id": "app_sandbox_00000000000000000000000000000000",
+  "action": "proofserve-provider-verification",
+  "signal": "proofserve:provider:provider_example_unverified",
+  "environment": "sandbox",
+  "rp_context": {
+    "rp_id": "rp_00000000000000000000000000000000",
+    "nonce": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "created_at": 1789034400,
+    "expires_at": 1789034700,
+    "signature": "0x2222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "allow_legacy_proofs": true,
+  "require_user_presence": true
+}
+```
+
+Failures: 400 VALIDATION_ERROR; 404 PROVIDER_NOT_FOUND;
+409 PROVIDER_ALREADY_VERIFIED; 503 WORLD_VERIFICATION_UNAVAILABLE. Unknown or
+malformed requests are rejected before signing.
+
+## POST /api/providers/:providerId/verification/world
 
 Purpose: verify or renew a provider's human-liveness metadata. Path id uses
 ProviderParamsSchema. Success only follows real server-side verification.
 
-The request body is the IDKit result produced by the exact World IDKit 4.x
-Selfie Check integration. Its concrete request schema and JSON example are
-intentionally deferred to Y04. Y04 must first pin the exact `@worldcoin/idkit`
-version and use its exported `IDKitResult` type. The backend will verify the
-result server-side using the World verification API. World rp_id, action, and
-signing key must come from trusted server configuration, not arbitrary
-client-controlled values. Raw IDKit proof payloads must not be logged or
-persisted. Any required nullifier/replay-protection storage will be designed in
-Y04 using the pinned SDK and current World documentation. This is the only Y01
-endpoint exempted from having a concrete request JSON example. Y01 adds no World
-dependency, guessed proof schema, or proof-handling behavior.
+Request: WorldVerificationRequestSchema, the strict legacy 3.0 `IDKitResult`
+returned by IDKit 4.x `selfieCheckLegacy`. `action_description` and the official
+`integrity_bundle` are optional; every other illustrated field is required.
+The body rejects unknown fields, other credential identifiers, v4/session proof
+shapes, absent signal hashes, and absent or false user presence. No legacy
+`verification_level` field exists in this contract. IDKit 4.2.4 describes the
+legacy proof as ABI-encoded hex but does not publish a fixed byte length in its
+TypeScript type, so the runtime contract requires nonempty, even-length hex
+without inventing a length restriction. The fictional example uses a realistic
+256-byte legacy proof value.
+
+When present, `integrity_bundle` is a strict object whose five fields are all
+required. `version` is numeric `1` or `2`; `signature_format` is
+`apple_app_attest` or `android_keystore`; `timestamp` is a nonnegative safe
+integer; `signature` is 1–8,192 characters of unprefixed ASCII hexadecimal with
+an even character count; and `jwt` is a 1–8,192-character string. The serialized
+bundle may not exceed 8,192 UTF-8 bytes. In particular, the integrity signature
+does not use the ordinary proof field's `0x`-prefixed wire format. These bounds
+come from the current Developer Portal
+[`request-schema.ts`](https://github.com/worldcoin/developer-portal/blob/main/web/api/v4/verify/request-schema.ts),
+while IDKit 4.2.4 supplies the same five-field result type and forwards the
+bundle without normalization.
+
+<!-- schema: WorldVerificationRequestSchema -->
+
+```json
+{
+  "protocol_version": "3.0",
+  "nonce": "0x1111111111111111111111111111111111111111111111111111111111111111",
+  "action": "proofserve-provider-verification",
+  "responses": [
+    {
+      "identifier": "selfie",
+      "signal_hash": "0x00ba3a74d38621e40e736b57d28b5e96c2307cba5a9a82454f0cf8653e2d0db4",
+      "proof": "0x66666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666666",
+      "merkle_root": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "nullifier": "0x4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  ],
+  "user_presence_completed": true,
+  "environment": "sandbox"
+}
+```
+
+The server checks the configured action and environment and compares
+`signal_hash` with `hashSignal` from the pinned official SDK using the derived
+provider signal. It forwards the complete validated result without field
+remapping to the fixed endpoint
+`POST https://developer.world.org/api/v4/verify/{configured_rp_id}`. The RP id
+comes only from server configuration. A successful upstream result must confirm
+the selfie response and the submitted nullifier. For this legacy Selfie Check,
+the current uniqueness-handler success body must contain exactly `success:
+true`, `protocol_version: "3.0"`, one successful `selfie` result with its
+nullifier, the matching `action`, the matching top-level `nullifier`, an optional
+valid `created_at`, the matching `environment`, and a string `message`. Missing,
+duplicate, malformed, unknown, or non-`3.0` protocol versions fail closed; the
+server never inserts or rewrites that field. The older published OpenAPI success
+schema omits `protocol_version`, so this contract follows the current Developer
+Portal uniqueness-handler response instead and records that discrepancy here.
+The endpoint remains
+production-hosted for Sandbox requests; the submitted `environment: "sandbox"`
+is not rewritten to staging.
 
 Success: 200, WorldVerificationResponseSchema, which uses
 VerifiedVerificationRecordSchema directly and infers the literal status VERIFIED.
@@ -241,6 +349,33 @@ Failures: 404 PROVIDER_NOT_FOUND; 400 WORLD_PROOF_INVALID;
 409 PROVIDER_ALREADY_VERIFIED applies to redundant verification when no renewal
 is required; it must not block required re-verification for sensitive operations.
 A failure never fabricates a verified record or exposes submitted proof data.
+Only the canonical decimal form of the verified 256-bit nullifier is retained
+for process-wide replay protection. Equivalent decimal or hexadecimal forms,
+hex digit/prefix casing, and leading zeros resolve to the same key. The raw
+IDKit result, proof, nonce, signal, RP signature, signing key, and upstream
+response are not persisted or logged.
+The replay check and provider update are one synchronous repository operation,
+so concurrent equivalent submissions cannot both succeed. The default replay
+store is shared by every repository/application instance in the Node process
+while provider and service maps remain isolated. Tests may inject an isolated
+replay store. A failed provider update rolls back its replay claim and provider
+state. This MVP store survives repository/application recreation within the
+process and resets only when the Node process restarts.
+
+The upstream response is accepted only as the current strict v4 uniqueness
+success shape described above. A structurally valid HTTP 400 carrying an exact
+`all_verifications_failed` result for `invalid_proof`,
+`invalid_merkle_root`, or `root_too_old` maps to WORLD_PROOF_INVALID. The current
+legacy verifier uses a result shaped as
+`{"identifier":"selfie","success":false,"code":"verification_error","detail":"..."}`
+when its verification call throws; that is an operational exception and maps to
+WORLD_VERIFICATION_UNAVAILABLE. Direct V2-style proof-error envelopes are not a
+valid V4 response and also map to unavailable. Authentication, RP/configuration,
+operational `verification_error`, unknown future codes, malformed bodies,
+duplicate JSON members, unexpected statuses, redirects, rate limits, timeouts,
+transport errors, and HTTP 200 `success: false` responses all fail closed as
+WORLD_VERIFICATION_UNAVAILABLE. Upstream response details are never returned or
+logged.
 
 <!-- schema: ApiErrorResponseSchema -->
 
@@ -517,9 +652,9 @@ Success: 202, CreateAgentRunResponseSchema, initially CREATED.
 Failures: 401 UNAUTHORIZED for missing or invalid authentication; 400
 VALIDATION_ERROR for invalid task or budget. Once accepted,
 NO_ELIGIBLE_SERVICE, BUDGET_EXCEEDED, PAYMENT_FAILED, and
-SERVICE_EXECUTION_FAILED are reported in a FAILED run. No payment is made by
-Y01. Later execution must check current eligibility and actual requested price
-before payment, and never pay above the maximum budget.
+SERVICE_EXECUTION_FAILED are reported in a FAILED run. Y05 execution checks
+current eligibility and the actual requested price before payment and never
+pays above the maximum budget.
 
 ## GET /api/agent/runs/:runId
 
@@ -654,10 +789,9 @@ they must not use the computer's real current time with these fixed fixtures.
 For expiry scenarios, inject an explicit offset from fixtureReferenceTime.
 Never install a fixture-based success fallback in production.
 
-Y02 implements registration, configured endpoints, ownership and activation gates,
-and discovery eligibility using these contracts. Y04 resolves the explicitly
-deferred World request and operation/replay policy. T01 implements the documented
-run transitions with shared fixtures; I01 renders the same fixtures and identifies
-them as demo data. Y03/T04/Y05 provide actual SDK mapping, settlement, inference,
-and run events later. Team review and Y01 merge remain prerequisites for dependent
-tasks; these contracts do not claim those integration steps are complete.
+Y02 implements registration, configured endpoints, ownership and activation
+gates, and discovery eligibility using these contracts. Y04 resolves the World
+request and operation/replay policy. Y05 implements authenticated durable run
+execution, settlement safety, persistence, leases, and reconciliation. T01's
+fixtures and transitions and I01's demo rendering remain historical inputs to
+the integrated behavior described here.

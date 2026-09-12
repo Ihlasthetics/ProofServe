@@ -1,6 +1,16 @@
 import { Server, Socket } from 'node:net';
 import { afterEach, expect, it, vi } from 'vitest';
 
+const worldEnvironment = {
+  WORLD_APP_ID: 'app_test_00000000000000000000000000000000',
+  WORLD_RP_ID: 'rp_00000000000000000000000000000000',
+  WORLD_RP_SIGNING_KEY:
+    '1111111111111111111111111111111111111111111111111111111111111111',
+  WORLD_ACTION: 'proofserve-provider-verification',
+  WORLD_ENVIRONMENT: 'sandbox',
+  WORLD_VERIFICATION_FRESHNESS_SECONDS: '86400',
+} as const;
+
 afterEach(() => {
   vi.doUnmock('@proofserve/agent');
   vi.doUnmock('../src/agent-runs.js');
@@ -19,6 +29,12 @@ it('loads the api entry point without runtime configuration', async () => {
   vi.stubEnv('DATABASE_URL', undefined);
   vi.stubEnv('AGENT_REGISTRY_BASE_URL', undefined);
   vi.stubEnv('AGENT_RUN_API_TOKEN', undefined);
+  vi.stubEnv('WORLD_APP_ID', undefined);
+  vi.stubEnv('WORLD_RP_ID', undefined);
+  vi.stubEnv('WORLD_RP_SIGNING_KEY', undefined);
+  vi.stubEnv('WORLD_ACTION', undefined);
+  vi.stubEnv('WORLD_ENVIRONMENT', undefined);
+  vi.stubEnv('WORLD_VERIFICATION_FRESHNESS_SECONDS', undefined);
   const sigtermListeners = process.listenerCount('SIGTERM');
   const sigintListeners = process.listenerCount('SIGINT');
   const listener = vi
@@ -88,6 +104,10 @@ it.each([
     name: 'missing payer configuration',
     override: { HEDERA_PAYER_PRIVATE_KEY: undefined },
   },
+  {
+    name: 'missing World signing configuration',
+    override: { WORLD_RP_SIGNING_KEY: undefined },
+  },
 ])(
   'fails closed before listening or connecting for $name',
   async ({ override }) => {
@@ -105,6 +125,7 @@ it.each([
         AGENT_RUN_API_TOKEN: 'test-only-agent-run-token-00000000000000000000',
         HEDERA_PAYER_ACCOUNT_ID: '0.0.654321',
         HEDERA_PAYER_PRIVATE_KEY: 'not-used-by-this-test',
+        ...worldEnvironment,
         ...override,
       }),
     ).rejects.toThrow();
@@ -170,6 +191,7 @@ it('closes Fastify and PostgreSQL through import-local signal handlers', async (
     AGENT_RUN_API_TOKEN: 'test-only-agent-run-token-00000000000000000000',
     HEDERA_PAYER_ACCOUNT_ID: '0.0.654321',
     HEDERA_PAYER_PRIVATE_KEY: 'fictional',
+    ...worldEnvironment,
   });
   const shutdown = process
     .listeners('SIGTERM')
