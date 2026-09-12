@@ -1,0 +1,156 @@
+.page {
+  display: block;
+  width: min(48rem, calc(100% - 2rem));
+  min-height: 100vh;
+  padding-block: 2rem 4rem;
+}
+
+.back {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.card {
+  padding: clamp(1.25rem, 4vw, 3rem);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  box-shadow: 0 1.5rem 4rem rgb(24 47 39 / 9%);
+}
+
+.eyebrow {
+  color: var(--color-muted);
+  font-size: var(--text-small);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.intro {
+  max-width: 42rem;
+  color: var(--color-muted);
+}
+
+.form {
+  display: grid;
+  gap: 0.75rem;
+  margin-block: 2rem;
+}
+
+.form label {
+  font-weight: 700;
+}
+
+.form input {
+  width: 100%;
+  min-height: 48px;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.65rem;
+  background: white;
+  color: var(--color-ink);
+  font: inherit;
+}
+
+.form input:focus-visible,
+.actions button:focus-visible,
+.deepLink:focus-visible,
+.back:focus-visible {
+  outline: var(--focus);
+  outline-offset: 3px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.actions button,
+.deepLink {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--color-accent);
+  border-radius: 0.65rem;
+  background: var(--color-accent);
+  color: white;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.actions .secondary {
+  background: transparent;
+  color: var(--color-accent);
+}
+
+.status {
+  min-height: 4rem;
+  padding: 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: var(--color-bg);
+}
+
+.status > :last-child {
+  margin-bottom: 0;
+}
+
+.verified {
+  color: var(--color-accent);
+  font-weight: 800;
+}
+
+.connector {
+  display: grid;
+  justify-items: center;
+  gap: 1rem;
+  padding-top: 0.5rem;
+}
+
+.connector img {
+  display: block;
+  width: min(100%, 320px);
+  height: auto;
+  padding: 0.5rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  background: white;
+}
+
+.confirmation {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.confirmation div {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.confirmation dt {
+  color: var(--color-muted);
+  font-size: var(--text-small);
+}
+
+.confirmation dd {
+  font-weight: 650;
+}
+
+.privacy {
+  margin-top: 1rem;
+  color: var(--color-muted);
+  font-size: var(--text-small);
+}
