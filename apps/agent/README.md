@@ -16,14 +16,16 @@ Preparation performs no network or signing activity. `task` uses shared `AgentTa
 Invalid configuration or an already claimed run ID rejects with a safe `BuyerError`.
 
 **Trust boundaries.** Both URLs must come from trusted server configuration and use
-HTTPS. The endpoint must be the exact canonical team-controlled `/v1/triage` URL,
-without credentials, query, or fragment. Never derive the allowlist from task or
-registry input. Redirects are rejected and credentials omitted. Keep these domains
-and DNS under team control; arbitrary third-party endpoints are unsupported.
+HTTPS, except canonical loopback HTTP URLs are accepted for local development. The
+endpoint must be the exact canonical team-controlled `/v1/triage` URL, without
+credentials, query, or fragment. Never derive the allowlist from task or registry
+input. Redirects are rejected and credentials omitted. Keep these domains and DNS
+under team control; arbitrary third-party endpoints are unsupported.
 
-Production lazily uses the official x402/Hedera client and ECDSA signer with server
-environment `HEDERA_PAYER_ACCOUNT_ID` and `HEDERA_PAYER_PRIVATE_KEY`. Keys, payment
-headers, signing bytes, and raw errors are never logged or returned. Optional
+Production uses the official x402/Hedera client and ECDSA signer with server
+environment `HEDERA_PAYER_ACCOUNT_ID` and `HEDERA_PAYER_PRIVATE_KEY`; the Y05 API
+constructs this dependency before it listens. Keys, payment headers, signing bytes,
+and raw errors are never logged or returned. Optional
 `fetcher`, `signerFactory`, `ownership`, and `now` are trusted server/test boundaries, not remote
 configuration. Budget comparisons use bigint, with one offer and one paid retry.
 
@@ -55,11 +57,19 @@ paid request must not be automatically repaid.
 
 **Ownership lifecycle.** Only an omitted/undefined `runId` generates an ID; explicit
 null and invalid IDs are rejected. Same-handle calls share one attempt and return
-detached snapshots. The injected synchronous `BuyerOwnership` interface claims an
+detached snapshots. The injectable `BuyerOwnership` interface claims an
 ID temporarily and releases it on any pre-signing failure. Immediately before
 signing, `beginSigning()` atomically converts the claim to a permanent payment
 tombstone. Concurrent and later handles sharing that owner cannot execute that ID.
-Signing failures, timeouts, and ambiguous submissions retain their tombstones.
+The durable Y05 owner also records the SDK-derived transaction ID, exact expected
+transfer fields, and transaction-valid-until time before submission. A final
+atomic ownership/version/validity fence runs immediately before transport. Signing
+failures, timeouts, and ambiguous submissions retain their tombstones; raw signed
+material is never persisted. After ownership ends, a tombstone without a recorded
+transaction ID is safely terminalized because submission was never authorized. A
+recorded transaction remains nonterminal in `PAYING`; only exact-transaction
+reconciliation may recover its receipt or record an authoritative post-expiry
+`PAYMENT_FAILED` outcome.
 
 The default owner is shared within this loaded module, with capacity 4096. Inject
 one shared `createInMemoryBuyerOwnership(capacity)` instance for a different limit;

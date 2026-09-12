@@ -12,7 +12,7 @@ import {
   type DiscoveryService,
 } from '@proofserve/shared';
 import { x402Client, x402HTTPClient } from '@x402/core/client';
-import type { ClientHederaSigner } from '@x402/hedera';
+import type { PaymentRequirements as X402PaymentRequirements } from '@x402/core/types';
 import { ExactHederaScheme } from '@x402/hedera/exact/client';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
@@ -30,6 +30,22 @@ import {
 import { discoverServices } from './registry-client.js';
 import { selectService } from './service-selection.js';
 import { transitionAgentRun, type AgentTransition } from './state-machine.js';
+import {
+  inspectSignedPaymentTransaction,
+  paymentExpectation,
+} from './hedera-payment-transaction.js';
+import type { BuyerPaymentAttempt } from './buyer-ownership.js';
+
+const runStatuses = [
+  'CREATED',
+  'DISCOVERING',
+  'SELECTED',
+  'PAYMENT_REQUIRED',
+  'PAYING',
+  'PAID',
+  'EXECUTING',
+  'COMPLETED',
+] as const;
 
 export interface BuyerOptions {
   /** Trusted server configuration, never copied from an AgentTask or listing. */
@@ -40,19 +56,59 @@ export interface BuyerOptions {
   fetcher?: typeof fetch;
   now?: () => string;
   /** Test/HSM boundary. Production defaults to the official ECDSA signer. */
-  signerFactory?: () => ClientHederaSigner | Promise<ClientHederaSigner>;
+  signerFactory?: () => BuyerSigner | Promise<BuyerSigner>;
+  /** Test boundary. Production inspects the official signed Hedera payload. */
+  paymentTransaction?: (
+    signedTransaction: string,
+    expected: Omit<
+      BuyerPaymentAttempt,
+      'transactionId' | 'transactionValidUntil'
+    >,
+  ) => BuyerPaymentAttempt | Promise<BuyerPaymentAttempt>;
 }
 
-async function productionSigner(): Promise<ClientHederaSigner> {
-  const { createClientHederaSigner, PrivateKey } = await import('@x402/hedera');
-  const account = HederaAccountIdSchema.parse(
-    process.env.HEDERA_PAYER_ACCOUNT_ID,
-  );
-  const key = process.env.HEDERA_PAYER_PRIVATE_KEY;
-  if (!key) throw new BuyerError();
-  return createClientHederaSigner(account, PrivateKey.fromStringECDSA(key), {
-    network: 'hedera:testnet',
-  });
+export interface BuyerSigner {
+  readonly accountId: string;
+  createPartiallySignedTransferTransaction(
+    requirements: X402PaymentRequirements,
+  ): Promise<string>;
+}
+
+async function productionSigner(): Promise<BuyerSigner> {
+  try {
+    const factory = await createProductionBuyerSignerFactory({
+      accountId: process.env.HEDERA_PAYER_ACCOUNT_ID,
+      privateKey: process.env.HEDERA_PAYER_PRIVATE_KEY,
+    });
+    return factory();
+  } catch {
+    throw new BuyerError();
+  }
+}
+
+/** Eagerly validates and constructs the production signer without signing. */
+export async function createProductionBuyerSignerFactory(configuration: {
+  accountId: unknown;
+  privateKey: unknown;
+}): Promise<() => BuyerSigner> {
+  try {
+    const account = HederaAccountIdSchema.parse(configuration.accountId);
+    if (
+      typeof configuration.privateKey !== 'string' ||
+      configuration.privateKey.length === 0
+    )
+      throw new BuyerError();
+    const { createClientHederaSigner, PrivateKey } =
+      await import('@x402/hedera');
+    const signer = createClientHederaSigner(
+      account,
+      PrivateKey.fromStringECDSA(configuration.privateKey),
+      { network: 'hedera:testnet' },
+    );
+    return () => signer;
+  } catch {
+    throw new BuyerError('VALIDATION_ERROR');
+  }
 }
 
 /** Bounds fetch, body reads and signing separately. A late signer never triggers a retry. */
@@ -79,7 +135,7 @@ async function bounded<T>(
 function endpoint(value: string): string {
   const url = new URL(EndpointUrlSchema.parse(value));
   if (
-    url.protocol !== 'https:' ||
+    !isTrustedProtocol(url) ||
     url.username ||
     url.password ||
     url.search ||
@@ -89,6 +145,38 @@ function endpoint(value: string): string {
   )
     throw new BuyerError('VALIDATION_ERROR');
   return url.href;
+}
+
+function isTrustedProtocol(url: URL): boolean {
+  return (
+    url.protocol === 'https:' ||
+    (url.protocol === 'http:' &&
+      ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))
+  );
+}
+
+export function validateBuyerConfiguration(configuration: {
+  registryBaseUrl: string;
+  allowedServiceEndpoint: string;
+}): { registryBaseUrl: string; allowedServiceEndpoint: string } {
+  try {
+    const allowedServiceEndpoint = endpoint(
+      configuration.allowedServiceEndpoint,
+    );
+    const registry = new URL(configuration.registryBaseUrl);
+    if (
+      !isTrustedProtocol(registry) ||
+      registry.username ||
+      registry.password ||
+      registry.search ||
+      registry.hash ||
+      registry.pathname !== '/'
+    )
+      throw new BuyerError('VALIDATION_ERROR');
+    return { registryBaseUrl: registry.href, allowedServiceEndpoint };
+  } catch {
+    throw new BuyerError('VALIDATION_ERROR');
+  }
 }
 
 function securitySnapshot({ service, provider }: DiscoveryService): string {
@@ -124,11 +212,9 @@ export function createBuyerRun(
   let runId: string;
   try {
     input = AgentTaskSchema.parse(task);
-    allowed = endpoint(options.allowedServiceEndpoint);
-    const base = new URL(options.registryBaseUrl);
-    if (base.protocol !== 'https:' || base.username || base.password)
-      throw new BuyerError('VALIDATION_ERROR');
-    registry = base.href;
+    const configuration = validateBuyerConfiguration(options);
+    allowed = configuration.allowedServiceEndpoint;
+    registry = configuration.registryBaseUrl;
     runId = IdentifierSchema.parse(
       options.runId === undefined ? randomUUID() : options.runId,
     );
@@ -138,30 +224,44 @@ export function createBuyerRun(
   const fetcher = options.fetcher ?? globalThis.fetch;
   const now = options.now ?? (() => new Date().toISOString());
   const signerFactory = options.signerFactory ?? productionSigner;
+  const inspectPayment =
+    options.paymentTransaction ?? inspectSignedPaymentTransaction;
   const ownership = options.ownership ?? defaultBuyerOwnership;
   let execution: Promise<AgentRun> | undefined;
 
   async function run(claim: BuyerClaim): Promise<AgentRun> {
-    let started: string;
+    let snapshot: AgentRun;
     try {
-      started = TimestampSchema.parse(now());
+      if (claim.initialRun) {
+        snapshot = AgentRunSchema.parse(claim.initialRun);
+        if (
+          snapshot.id !== runId ||
+          JSON.stringify(snapshot.task) !== JSON.stringify(input) ||
+          snapshot.status === 'COMPLETED' ||
+          snapshot.status === 'FAILED' ||
+          snapshot.paymentReceipt !== null
+        )
+          throw new BuyerError('VALIDATION_ERROR');
+      } else {
+        const started = TimestampSchema.parse(now());
+        snapshot = AgentRunSchema.parse({
+          id: runId,
+          task: input,
+          status: 'CREATED',
+          selectedServiceId: null,
+          paymentRequirements: null,
+          paymentReceipt: null,
+          result: null,
+          error: null,
+          events: [{ status: 'CREATED', occurredAt: started }],
+          createdAt: started,
+          updatedAt: started,
+        });
+      }
     } catch {
       throw new BuyerError('VALIDATION_ERROR');
     }
-    let snapshot = AgentRunSchema.parse({
-      id: runId,
-      task: input,
-      status: 'CREATED',
-      selectedServiceId: null,
-      paymentRequirements: null,
-      paymentReceipt: null,
-      result: null,
-      error: null,
-      events: [{ status: 'CREATED', occurredAt: started }],
-      createdAt: started,
-      updatedAt: started,
-    });
-    let anchorUtc = Date.parse(started);
+    let anchorUtc = Date.parse(snapshot.updatedAt);
     let anchorMonotonic = performance.now();
     const time = () => {
       const value = TimestampSchema.parse(now());
@@ -171,8 +271,28 @@ export function createBuyerRun(
       anchorMonotonic = performance.now();
       return value;
     };
-    const transition = (command: AgentTransition) => {
-      snapshot = transitionAgentRun(snapshot, command);
+    const transition = async (command: AgentTransition) => {
+      const currentIndex = runStatuses.indexOf(
+        snapshot.status as (typeof runStatuses)[number],
+      );
+      const targetIndex = runStatuses.indexOf(
+        command.status as (typeof runStatuses)[number],
+      );
+      if (command.status !== 'FAILED' && currentIndex >= targetIndex) {
+        const matchesPersistedData =
+          (command.status !== 'SELECTED' ||
+            snapshot.selectedServiceId === command.selectedServiceId) &&
+          (command.status !== 'PAYMENT_REQUIRED' ||
+            JSON.stringify(snapshot.paymentRequirements) ===
+              JSON.stringify(command.paymentRequirements));
+        if (!matchesPersistedData) throw new BuyerError('VALIDATION_ERROR');
+        return;
+      }
+      const next = transitionAgentRun(snapshot, command);
+      // Retain authoritative evidence locally if a persistence acknowledgement
+      // fails, so a following FAILED snapshot can still preserve the receipt.
+      snapshot = next;
+      await claim.persist?.(next);
     };
     const discover = () =>
       bounded((signal) =>
@@ -205,8 +325,9 @@ export function createBuyerRun(
     let remaining = BigInt(input.budget.maxAmountAtomic);
     const unpaidController = new AbortController();
     const paidController = new AbortController();
+    let paymentTombstoned = false;
     try {
-      transition({ status: 'DISCOVERING', occurredAt: time() });
+      await transition({ status: 'DISCOVERING', occurredAt: time() });
       const chosen = select(await discover());
       if (
         chosen.service.endpoint !== allowed ||
@@ -223,7 +344,7 @@ export function createBuyerRun(
         if (securitySnapshot(fresh) !== securitySnapshot(chosen))
           throw new BuyerError('NO_ELIGIBLE_SERVICE');
       };
-      transition({
+      await transition({
         status: 'SELECTED',
         selectedServiceId: chosen.service.id,
         occurredAt: time(),
@@ -262,7 +383,7 @@ export function createBuyerRun(
         chosen.service.paymentRequirements,
         remaining,
       );
-      transition({
+      await transition({
         status: 'PAYMENT_REQUIRED',
         paymentRequirements: chosen.service.paymentRequirements,
         occurredAt: time(),
@@ -271,7 +392,7 @@ export function createBuyerRun(
       await revalidate();
       remaining -= BigInt(chosen.service.paymentRequirements.amountAtomic);
       if (remaining < 0n) throw new BuyerError('BUDGET_EXCEEDED');
-      transition({ status: 'PAYING', occurredAt: time() });
+      await transition({ status: 'PAYING', occurredAt: time() });
       const signer = await bounded(async () => signerFactory());
       await revalidate();
       const client = new x402Client()
@@ -301,15 +422,30 @@ export function createBuyerRun(
             : [],
         );
       const http = new x402HTTPClient(client);
-      claim.beginSigning();
+      const expectedPayment = paymentExpectation(
+        signer.accountId,
+        chosen.service.paymentRequirements,
+      );
+      await claim.beginSigning(expectedPayment);
+      paymentTombstoned = true;
       const payload = await bounded(() => http.createPaymentPayload(offer));
+      const signingMaterial = payload.payload.transaction;
+      if (typeof signingMaterial !== 'string') throw new BuyerError();
+      const paymentAttempt = await inspectPayment(
+        signingMaterial,
+        expectedPayment,
+      );
+      await claim.recordPaymentAttempt?.(paymentAttempt);
       const headers = http.encodePaymentSignatureHeader(payload);
       // Last awaited operation before submission: refresh security state after signing.
       await revalidate();
+      await claim.authorizeSubmission?.(paymentAttempt.transactionId);
       const paid = await request(headers, paidController); // Exactly one paid retry; never use an automatic fetch wrapper.
       const evidence = validatedSettlement(
         paid,
+        paymentAttempt,
         offer.accepts[0]?.extra?.feePayer,
+        chosen.service.paymentRequirements,
       );
       let settledAt: string;
       let clockFailed = false;
@@ -334,13 +470,13 @@ export function createBuyerRun(
         ...evidence,
         settledAt,
       });
-      transition({
+      await transition({
         status: 'PAID',
         paymentReceipt: receipt,
         occurredAt: settledAt,
       });
       if (clockFailed) throw new BuyerError('SERVICE_EXECUTION_FAILED');
-      transition({ status: 'EXECUTING', occurredAt: time() });
+      await transition({ status: 'EXECUTING', occurredAt: time() });
       if (paid.status !== 200) throw new BuyerError('SERVICE_EXECUTION_FAILED');
       const paidText = await bounded(
         (signal) => readBuyerBody(paid, 65_536, signal),
@@ -350,19 +486,23 @@ export function createBuyerRun(
       const result = TriageResultSchema.safeParse(paidBody);
       if (!result.success) throw new BuyerError('SERVICE_EXECUTION_FAILED');
       const serialized = JSON.stringify(result.data);
-      const signingMaterial = payload.payload.transaction;
       if (
         Object.values(headers).some((value) => serialized.includes(value)) ||
         (typeof signingMaterial === 'string' &&
           serialized.includes(signingMaterial))
       )
         throw new BuyerError('SERVICE_EXECUTION_FAILED');
-      transition({
+      await transition({
         status: 'COMPLETED',
         result: result.data,
         occurredAt: time(),
       });
     } catch (error) {
+      if (paymentTombstoned && snapshot.paymentReceipt === null) {
+        // Once signing/payment may have begun, only authoritative settlement
+        // reconciliation may create a receipt or terminalize the run.
+        return snapshot;
+      }
       const safe = new BuyerError(
         snapshot.paymentReceipt
           ? 'SERVICE_EXECUTION_FAILED'
@@ -377,7 +517,7 @@ export function createBuyerRun(
       } catch {
         /* Retain a valid timeline if the injected clock fails. */
       }
-      transition({
+      await transition({
         status: 'FAILED',
         error: { code: safe.code, message: safe.message },
         occurredAt: failedAt,
@@ -391,11 +531,11 @@ export function createBuyerRun(
   return {
     execute: () => {
       execution ??= Promise.resolve().then(async () => {
-        const claim = ownership.claim(runId);
+        const claim = await ownership.claim(runId);
         try {
           return await run(claim);
         } finally {
-          claim.release();
+          await claim.release();
         }
       });
       return execution.then((value) => AgentRunSchema.parse(value));

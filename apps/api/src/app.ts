@@ -1,12 +1,16 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import {
   ActivateServiceRequestSchema,
+  AgentRunParamsSchema,
+  CreateAgentRunRequestSchema,
   CreateProviderRequestSchema,
   CreateServiceRequestSchema,
   ListServicesQuerySchema,
   ProviderParamsSchema,
   ServiceParamsSchema,
 } from '@proofserve/shared';
+import { AgentRunServiceError, type AgentRunService } from './agent-runs.js';
 import {
   apiError,
   createRegistry,
@@ -35,7 +39,53 @@ async function rejectQueryParameters(request: FastifyRequest) {
     throw new RegistryError('VALIDATION_ERROR');
 }
 
-export function createApiApp(options: RegistryOptions = {}) {
+async function rejectGetBodyAndQuery(request: FastifyRequest) {
+  await rejectQueryParameters(request);
+  if (
+    request.headers['transfer-encoding'] !== undefined ||
+    (request.headers['content-length'] !== undefined &&
+      request.headers['content-length'] !== '0')
+  )
+    throw new RegistryError('VALIDATION_ERROR');
+}
+
+async function rejectAgentRunCreationMetadata(request: FastifyRequest) {
+  await rejectQueryParameters(request);
+  for (const name of [
+    'proxy-authorization',
+    'cookie',
+    'x-api-key',
+    'payment-signature',
+    'payment-required',
+    'payment-response',
+    'x-proofserve-hedera-transaction-id',
+    'x-proofserve-hedera-transaction-url',
+  ])
+    if (request.headers[name] !== undefined)
+      throw new RegistryError('VALIDATION_ERROR');
+}
+
+export function validateAgentRunApiToken(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length < 32 ||
+    value.length > 512 ||
+    /\s/.test(value)
+  )
+    throw new Error('Invalid agent run authentication configuration');
+  return value;
+}
+
+function tokenDigest(value: string): Buffer {
+  return createHash('sha256').update(value, 'utf8').digest();
+}
+
+export interface ApiAppOptions extends RegistryOptions {
+  agentRuns?: AgentRunService;
+  agentRunApiToken?: string;
+}
+
+export function createApiApp(options: ApiAppOptions = {}) {
   const app = Fastify({
     logger: false,
     // Router decoding failures happen before the ordinary error handler.
@@ -49,24 +99,47 @@ export function createApiApp(options: RegistryOptions = {}) {
     },
   });
   const registry = createRegistry(options);
+  const agentRuns = options.agentRuns;
+  let expectedTokenDigest: Buffer | undefined;
+  try {
+    expectedTokenDigest = tokenDigest(
+      validateAgentRunApiToken(options.agentRunApiToken),
+    );
+  } catch {
+    // The standalone server validates eagerly; an unconfigured injected app
+    // still fails closed if an agent-run route is reached.
+  }
+  const authorizeAgentRun = async (request: FastifyRequest) => {
+    if (!expectedTokenDigest) throw new RegistryError('INTERNAL_ERROR');
+    const header = request.headers.authorization;
+    const match =
+      typeof header === 'string' && header.length <= 520
+        ? /^Bearer ([^\s]+)$/.exec(header)
+        : null;
+    const supplied = tokenDigest(match?.[1] ?? '');
+    if (!timingSafeEqual(expectedTokenDigest, supplied))
+      throw new RegistryError('UNAUTHORIZED');
+  };
 
   app.setErrorHandler((error, _request, reply) => {
     const code =
       error instanceof RegistryError
         ? error.code
-        : error instanceof Error &&
-            'code' in error &&
-            typeof error.code === 'string' &&
-            [
-              'FST_ERR_CTP_INVALID_JSON_BODY',
-              'FST_ERR_CTP_EMPTY_JSON_BODY',
-              'FST_ERR_CTP_INVALID_MEDIA_TYPE',
-              'FST_ERR_CTP_BODY_TOO_LARGE',
-              'FST_ERR_CTP_INVALID_CONTENT_LENGTH',
-              'FST_ERR_BAD_URL',
-            ].includes(error.code)
-          ? 'VALIDATION_ERROR'
-          : 'INTERNAL_ERROR';
+        : error instanceof AgentRunServiceError
+          ? error.code
+          : error instanceof Error &&
+              'code' in error &&
+              typeof error.code === 'string' &&
+              [
+                'FST_ERR_CTP_INVALID_JSON_BODY',
+                'FST_ERR_CTP_EMPTY_JSON_BODY',
+                'FST_ERR_CTP_INVALID_MEDIA_TYPE',
+                'FST_ERR_CTP_BODY_TOO_LARGE',
+                'FST_ERR_CTP_INVALID_CONTENT_LENGTH',
+                'FST_ERR_BAD_URL',
+              ].includes(error.code)
+            ? 'VALIDATION_ERROR'
+            : 'INTERNAL_ERROR';
     const response = apiError(code);
     return reply.code(response.status).send(response.body);
   });
@@ -140,6 +213,36 @@ export function createApiApp(options: RegistryOptions = {}) {
         Object.fromEntries(params),
       );
       return registry.listServices(query);
+    },
+  );
+  app.post(
+    '/api/agent/runs',
+    {
+      onRequest: async (request) => {
+        await authorizeAgentRun(request);
+        await rejectAgentRunCreationMetadata(request);
+      },
+    },
+    async (request, reply) => {
+      if (!agentRuns) throw new RegistryError('INTERNAL_ERROR');
+      const task = requestData(CreateAgentRunRequestSchema, request.body);
+      return reply.code(202).send(await agentRuns.createRun(task));
+    },
+  );
+  app.get<{ Params: { runId: string } }>(
+    '/api/agent/runs/:runId',
+    {
+      onRequest: async (request) => {
+        await authorizeAgentRun(request);
+        await rejectGetBodyAndQuery(request);
+      },
+    },
+    async (request) => {
+      if (!agentRuns) throw new RegistryError('INTERNAL_ERROR');
+      const { runId } = requestData(AgentRunParamsSchema, {
+        runId: request.params.runId,
+      });
+      return agentRuns.getRun(runId);
     },
   );
   return app;

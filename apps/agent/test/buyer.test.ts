@@ -166,6 +166,11 @@ function harness(amount = '1000000') {
     runId: `run_t04_${++nextRunId}`,
     fetcher,
     signerFactory,
+    paymentTransaction: async (_signedTransaction, expected) => ({
+      ...expected,
+      transactionId: transaction,
+      transactionValidUntil: '2099-09-06T10:00:00.000Z',
+    }),
     now: () => state.time,
   };
   const prepare = () => createBuyerRun(task, options);
@@ -212,7 +217,26 @@ const failure = async (
   return output;
 };
 
+const paymentPending = async (h: ReturnType<typeof harness>) => {
+  const output = await h.prepare().execute();
+  expect(output.status).toBe('PAYING');
+  expect(output.error).toBeNull();
+  expect(output.paymentReceipt).toBeNull();
+  expect(output.result).toBeNull();
+  expect(AgentRunSchema.safeParse(output).success).toBe(true);
+  expect(JSON.stringify(output)).not.toContain('SENSITIVE');
+  return output;
+};
+
 describe('T04 real buyer flow with offline Y03 service', () => {
+  it('rejects settlement for an unrelated historical transaction from the same payer', async () => {
+    const h = harness();
+    h.state.settlement.transaction = '0.0.7162784@1788940700.123456789';
+    const output = await paymentPending(h);
+    expect(output.paymentReceipt).toBeNull();
+    expect(h.settle).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['initialization', 'signing'] as const)(
     'refreshes the registry after %s and blocks every security change',
     async (phase) => {
@@ -300,7 +324,9 @@ describe('T04 real buyer flow with offline Y03 service', () => {
             change();
             return signingBytes;
           });
-        expect((await h.prepare().execute()).status, kind).toBe('FAILED');
+        expect((await h.prepare().execute()).status, kind).toBe(
+          phase === 'signing' ? 'PAYING' : 'FAILED',
+        );
         expect(h.sign, kind).toHaveBeenCalledTimes(
           phase === 'initialization' ? 0 : 1,
         );
@@ -454,7 +480,7 @@ describe('T04 real buyer flow with offline Y03 service', () => {
       response.headers.set(name, 'SENSITIVE');
       return response;
     };
-    expect((await failure(h)).paymentReceipt).toBeNull();
+    expect((await paymentPending(h)).paymentReceipt).toBeNull();
   });
 
   it('accepts the Y03 path transaction format and derives its URL', async () => {
@@ -521,7 +547,7 @@ describe('T04 real buyer flow with offline Y03 service', () => {
       );
       const pending = h.prepare().execute();
       await vi.advanceTimersByTimeAsync(30_001);
-      expect((await pending).status).toBe('FAILED');
+      expect((await pending).status).toBe(at >= 5 ? 'PAYING' : 'FAILED');
       expect(h.fetcher).toHaveBeenCalledTimes(at);
       expect(h.sign).toHaveBeenCalledTimes(at >= 5 ? 1 : 0);
       expect(h.fetcher.mock.calls[at - 1]?.[1]?.signal?.aborted).toBe(true);
@@ -782,7 +808,7 @@ describe('T04 real buyer flow with offline Y03 service', () => {
       response.headers.delete(name);
       return response;
     };
-    const output = await failure(h);
+    const output = await paymentPending(h);
     expect(output.paymentReceipt).toBeNull();
     expect(h.sign).toHaveBeenCalledTimes(1);
     expect(h.fetcher).toHaveBeenCalledTimes(6);
@@ -809,7 +835,7 @@ describe('T04 real buyer flow with offline Y03 service', () => {
       response.headers.set('payment-response', encode(settlement));
       return response;
     };
-    const output = await failure(h);
+    const output = await paymentPending(h);
     expect(output.paymentReceipt).toBeNull();
     expect(h.sign).toHaveBeenCalledTimes(1);
   });
@@ -822,7 +848,7 @@ describe('T04 real buyer flow with offline Y03 service', () => {
       transaction: '',
       errorReason: 'SENSITIVE',
     };
-    await failure(h);
+    await paymentPending(h);
     expect(h.sign).toHaveBeenCalledTimes(1);
     expect(h.settle).toHaveBeenCalledTimes(1);
     expect(h.engine).not.toHaveBeenCalled();
@@ -868,7 +894,8 @@ describe('T04 real buyer flow with offline Y03 service', () => {
           ? Promise.reject(new Error('SENSITIVE network error'))
           : original(...args),
       );
-      await failure(h);
+      if (at >= 5) await paymentPending(h);
+      else await failure(h);
       expect(h.fetcher).toHaveBeenCalledTimes(at);
       expect(h.sign).toHaveBeenCalledTimes(at >= 5 ? 1 : 0);
     },
@@ -877,8 +904,8 @@ describe('T04 real buyer flow with offline Y03 service', () => {
   it('sanitizes signing failure and never retries or retains raw causes', async () => {
     const h = harness();
     h.sign.mockRejectedValue(new Error('SENSITIVE signing key'));
-    const output = await failure(h);
-    expect(output.error).not.toHaveProperty('cause');
+    const output = await paymentPending(h);
+    expect(output.error).toBeNull();
     expect(h.fetcher).toHaveBeenCalledTimes(4);
     expect(h.sign).toHaveBeenCalledTimes(1);
   });
@@ -889,7 +916,7 @@ describe('T04 real buyer flow with offline Y03 service', () => {
       h.state.time = '2026-09-07T10:00:00.000Z';
       return signingBytes;
     });
-    await failure(h, 'NO_ELIGIBLE_SERVICE');
+    await paymentPending(h);
     expect(h.fetcher).toHaveBeenCalledTimes(5);
   });
 
@@ -917,7 +944,7 @@ describe('T04 real buyer flow with offline Y03 service', () => {
     );
     const pending = h.prepare().execute();
     await vi.advanceTimersByTimeAsync(30_001);
-    expect((await pending).status).toBe('FAILED');
+    expect((await pending).status).toBe('PAYING');
     finish?.(signingBytes);
     await vi.advanceTimersByTimeAsync(1);
     expect(h.fetcher).toHaveBeenCalledTimes(4);
@@ -941,8 +968,8 @@ describe('T04 real buyer flow with offline Y03 service', () => {
     const h = harness();
     h.sign.mockRejectedValue(new Error('SENSITIVE'));
     const run = h.prepare();
-    expect((await run.execute()).status).toBe('FAILED');
-    expect((await run.execute()).status).toBe('FAILED');
+    expect((await run.execute()).status).toBe('PAYING');
+    expect((await run.execute()).status).toBe('PAYING');
     expect(h.sign).toHaveBeenCalledTimes(1);
   });
 
@@ -1039,7 +1066,7 @@ describe('approved ownership lifecycle', () => {
       }
       const execution = h.prepare().execute();
       await vi.runAllTimersAsync();
-      expect((await execution).status).toBe('FAILED');
+      expect((await execution).status).toBe('PAYING');
       await expect(h.prepare().execute()).rejects.toBeInstanceOf(BuyerError);
       expect(h.sign).toHaveBeenCalledTimes(1);
       expect(

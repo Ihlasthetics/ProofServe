@@ -93,6 +93,20 @@ it('production defaults lazily use official ECDSA signer exports and built-in fe
     registryBaseUrl: 'https://registry.example.test',
     allowedServiceEndpoint: endpoint,
     now: () => fixtureReferenceTime,
+    paymentTransaction: async (
+      _signedTransaction: string,
+      expected: {
+        payer: string;
+        receiver: string;
+        amountAtomic: string;
+        asset: string;
+        network: string;
+      },
+    ) => ({
+      ...expected,
+      transactionId: '0.0.7162784@1788940800.123456789',
+      transactionValidUntil: '2099-09-06T10:00:00.000Z',
+    }),
   };
   const run = createBuyerRun(agentTaskFixture, options);
   expect(fetcher).not.toHaveBeenCalled();

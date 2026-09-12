@@ -110,7 +110,7 @@ it('constructs and signs through the real production SDK offline without submitt
   const transaction = Transaction.fromBytes(Buffer.from(bytes, 'base64'));
   expect(transaction.isFrozen()).toBe(true);
   expect(key.publicKey.verifyTransaction(transaction)).toBe(true);
-  expect(output.status).toBe('FAILED');
+  expect(output.status).toBe('PAYING');
   expect(output.paymentReceipt).toBeNull();
   expect(JSON.stringify(output)).not.toContain(key.toStringRaw());
   expect(publicFetch).not.toHaveBeenCalled();

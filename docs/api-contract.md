@@ -457,6 +457,9 @@ integer-safe comparison. This response is a snapshot, not an authorization to pa
 ## POST /api/agent/runs
 
 Purpose: accept a task and maximum budget for later server-side execution.
+This server-funded endpoint requires a server-to-server bearer token. Browser
+code must never contain or receive the server token. Send the server-controlled
+`AGENT_RUN_API_TOKEN` as `Authorization: Bearer <token>`.
 Request: CreateAgentRunRequestSchema (AgentTask). No caller-supplied state,
 selected service, result, receipt, or signing credentials.
 
@@ -511,7 +514,8 @@ Success: 202, CreateAgentRunResponseSchema, initially CREATED.
 }
 ```
 
-Failures: 400 VALIDATION_ERROR for invalid task or budget. Once accepted,
+Failures: 401 UNAUTHORIZED for missing or invalid authentication; 400
+VALIDATION_ERROR for invalid task or budget. Once accepted,
 NO_ELIGIBLE_SERVICE, BUDGET_EXCEEDED, PAYMENT_FAILED, and
 SERVICE_EXECUTION_FAILED are reported in a FAILED run. No payment is made by
 Y01. Later execution must check current eligibility and actual requested price
@@ -520,6 +524,8 @@ before payment, and never pay above the maximum budget.
 ## GET /api/agent/runs/:runId
 
 Purpose: retrieve a run snapshot, event timeline, result, and available receipt.
+This endpoint requires the same server-to-server bearer token; it is not a
+browser-facing authorization mechanism.
 No query parameters or request body. Path example (AgentRunParamsSchema):
 
 <!-- schema: AgentRunParamsSchema -->
@@ -618,9 +624,24 @@ receipt is not a real settlement and its explorer URL is deliberately reserved.
 }
 ```
 
-Failures: 400 VALIDATION_ERROR for malformed runId or unexpected query parameters;
-404 RUN_NOT_FOUND for an unknown run. A FAILED run after settlement retains its
+Failures: 401 UNAUTHORIZED for missing or invalid authentication; 400
+VALIDATION_ERROR for malformed runId or unexpected query parameters; 404
+RUN_NOT_FOUND for an unknown run. A FAILED run after settlement retains its
 receipt and does not imply a refund or authorize a second payment.
+
+Y05 stores a permanent payment tombstone before signing, then stores only the
+SDK-derived transaction ID, expected transfer fields, and transaction-valid-until
+time before request submission. After its execution lease ends, a tombstone with
+no transaction ID becomes `PAYMENT_FAILED` because submission was never
+authorized. Interrupted work with a transaction ID is reconciled by
+exact transaction ID against the fixed Hedera testnet Mirror Node and is never
+automatically paid again. Confirmed settlement reconstructs the strict receipt;
+authoritative absence becomes `PAYMENT_FAILED` only after validity expiry and the
+bounded finality grace period. Temporary reconciliation failures remain pending.
+A durable receipt is always preserved.
+If remaining response processing cannot be reconstructed without repeating the
+paid request, recovery terminalizes as `SERVICE_EXECUTION_FAILED` rather than
+inventing success or resubmitting payment.
 
 ## Fixtures and handoff
 
