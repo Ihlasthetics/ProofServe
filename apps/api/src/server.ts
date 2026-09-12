@@ -7,6 +7,10 @@ import { createApiApp, validateAgentRunApiToken } from './app.js';
 import { createAgentRunService } from './agent-runs.js';
 import { createPostgresAgentRunRepository } from './postgres-agent-run-repository.js';
 import { createHederaSettlementReconciler } from './hedera-settlement-reconciler.js';
+import {
+  createWorldVerificationClient,
+  readWorldConfiguration,
+} from './world.js';
 
 function required(value: string | undefined): string {
   if (!value) throw new Error('Missing server configuration');
@@ -34,6 +38,9 @@ export async function startServer(
     registryBaseUrl,
     allowedServiceEndpoint: endpoint,
   });
+  const worldVerification = createWorldVerificationClient(
+    readWorldConfiguration(environment),
+  );
   const signerFactory = await createProductionBuyerSignerFactory({
     accountId: environment.HEDERA_PAYER_ACCOUNT_ID,
     privateKey: environment.HEDERA_PAYER_PRIVATE_KEY,
@@ -60,6 +67,7 @@ export async function startServer(
       capability === 'SUPPORT_TICKET_TRIAGE' ? endpoint : undefined,
     agentRuns,
     agentRunApiToken,
+    worldVerification,
   });
   const reconciliation: {
     timer: ReturnType<typeof setInterval> | undefined;
