@@ -576,7 +576,8 @@ export class PostgresAgentRunRepository implements AgentRunRepository {
         run.status === 'FAILED'
       )
         return false;
-      if (run.paymentReceipt === null) return false;
+      if (row.payment_identifier !== null && run.paymentReceipt === null)
+        return false;
       const failed = createFailureSnapshot(run, occurredAt);
       const updated = await client.query(
         `UPDATE agent_runs

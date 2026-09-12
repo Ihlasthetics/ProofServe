@@ -274,6 +274,27 @@ function repository(database: FakePostgres) {
 }
 
 describe('PostgreSQL agent run repository', () => {
+  it('recovers a NULL-identifier tombstone only after its lease is released', async () => {
+    const database = new FakePostgres();
+    const runs = repository(database);
+    const created = createdRun();
+    await runs.createRun(created);
+    const claim = await runs.claimExecution(created.id, 'owner_signing');
+    if (!claim) throw new Error('Missing claim');
+    await claim.persist(payingRun(created));
+    await claim.beginSigning(paymentExpectation);
+    expect(
+      await runs.reconcileTombstonedRun(created.id, fixtureReferenceTime),
+    ).toBe(false);
+    expect((await runs.getRun(created.id))?.status).toBe('PAYING');
+    await claim.release();
+    expect(
+      await runs.reconcileTombstonedRun(created.id, fixtureReferenceTime),
+    ).toBe(true);
+    expect((await runs.getRun(created.id))?.error?.code).toBe('PAYMENT_FAILED');
+    expect(database.paymentIdentifier).toBeNull();
+  });
+
   it('rejects generic failure for a tombstoned run without a receipt', async () => {
     const database = new FakePostgres();
     const runs = repository(database);

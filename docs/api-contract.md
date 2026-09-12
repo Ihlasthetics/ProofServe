@@ -631,7 +631,9 @@ receipt and does not imply a refund or authorize a second payment.
 
 Y05 stores a permanent payment tombstone before signing, then stores only the
 SDK-derived transaction ID, expected transfer fields, and transaction-valid-until
-time before request submission. Interrupted post-signing work is reconciled by
+time before request submission. After its execution lease ends, a tombstone with
+no transaction ID becomes `PAYMENT_FAILED` because submission was never
+authorized. Interrupted work with a transaction ID is reconciled by
 exact transaction ID against the fixed Hedera testnet Mirror Node and is never
 automatically paid again. Confirmed settlement reconstructs the strict receipt;
 authoritative absence becomes `PAYMENT_FAILED` only after validity expiry and the

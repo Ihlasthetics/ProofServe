@@ -521,6 +521,85 @@ describe('Y05 reconciliation', () => {
     return { created, claim, snapshot };
   }
 
+  it('terminalizes signer rejection after tombstone insertion without retrying', async () => {
+    const repository = new InMemoryAgentRunRepository();
+    const reconcile = vi.fn<SettlementReconciler['reconcile']>();
+    const h = harness(repository, { reconcile });
+    h.sign.mockRejectedValue(new Error('SENSITIVE signer rejection'));
+    const created = await h.service.createRun(agentTaskFixture);
+    await h.service.executeRun(created.id);
+    const failed = await repository.getRun(created.id);
+    expect(failed?.status).toBe('FAILED');
+    expect(failed?.error?.code).toBe('PAYMENT_FAILED');
+    expect(failed?.paymentReceipt).toBeNull();
+    expect(h.sign).toHaveBeenCalledTimes(1);
+    expect(
+      h.fetcher.mock.calls.filter(([, init]) =>
+        new Headers(init?.headers).has('payment-signature'),
+      ),
+    ).toHaveLength(0);
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+
+  it('terminalizes signing timeout after tombstone insertion without a late retry', async () => {
+    vi.useFakeTimers();
+    const repository = new InMemoryAgentRunRepository();
+    const reconcile = vi.fn<SettlementReconciler['reconcile']>();
+    const h = harness(repository, { reconcile });
+    h.sign.mockImplementation(() => new Promise(() => {}));
+    const created = await h.service.createRun(agentTaskFixture);
+    const execution = h.service.executeRun(created.id);
+    await vi.advanceTimersByTimeAsync(30_001);
+    await execution;
+    const failed = await repository.getRun(created.id);
+    expect(failed?.status).toBe('FAILED');
+    expect(failed?.error?.code).toBe('PAYMENT_FAILED');
+    expect(h.sign).toHaveBeenCalledTimes(1);
+    expect(
+      h.fetcher.mock.calls.filter(([, init]) =>
+        new Headers(init?.headers).has('payment-signature'),
+      ),
+    ).toHaveLength(0);
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+
+  it('does not recover a NULL-identifier tombstone while its owner is current', async () => {
+    const repository = new InMemoryAgentRunRepository();
+    const first = harness(repository);
+    const created = await first.service.createRun(agentTaskFixture);
+    const claim = await repository.claimExecution(created.id, 'owner_current');
+    if (!claim) throw new Error('Expected claim');
+    let paying = transitionAgentRun(created, {
+      status: 'DISCOVERING',
+      occurredAt: fixtureReferenceTime,
+    });
+    paying = transitionAgentRun(paying, {
+      status: 'SELECTED',
+      selectedServiceId: activeServiceFixture.id,
+      occurredAt: fixtureReferenceTime,
+    });
+    paying = transitionAgentRun(paying, {
+      status: 'PAYMENT_REQUIRED',
+      paymentRequirements: activeServiceFixture.paymentRequirements,
+      occurredAt: fixtureReferenceTime,
+    });
+    paying = transitionAgentRun(paying, {
+      status: 'PAYING',
+      occurredAt: fixtureReferenceTime,
+    });
+    await claim.persist(paying);
+    await claim.beginSigning(expectation);
+    expect(
+      await repository.reconcileTombstonedRun(created.id, fixtureReferenceTime),
+    ).toBe(false);
+    expect((await repository.getRun(created.id))?.status).toBe('PAYING');
+    await claim.release();
+    expect(
+      await repository.reconcileTombstonedRun(created.id, fixtureReferenceTime),
+    ).toBe(true);
+    expect((await repository.getRun(created.id))?.status).toBe('FAILED');
+  });
+
   it('authoritatively recovers settlement after a crash before receipt persistence', async () => {
     const repository = new InMemoryAgentRunRepository();
     const { created } = await abandonPayment(repository);
@@ -700,7 +779,7 @@ describe('Y05 reconciliation', () => {
     expect(restarted.sign).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps a crash after tombstone insertion pending without retrying signing', async () => {
+  it('terminalizes a restart after NULL-identifier tombstone insertion without retrying signing', async () => {
     const repository = new InMemoryAgentRunRepository();
     const first = harness(repository);
     const created = await first.service.createRun(agentTaskFixture);
@@ -733,8 +812,8 @@ describe('Y05 reconciliation', () => {
     await restarted.service.reconcile();
     await restarted.service.executeRun(created.id);
     const recovered = await repository.getRun(created.id);
-    expect(recovered?.status).toBe('PAYING');
-    expect(recovered?.error).toBeNull();
+    expect(recovered?.status).toBe('FAILED');
+    expect(recovered?.error?.code).toBe('PAYMENT_FAILED');
     expect(restarted.fetcher).not.toHaveBeenCalled();
     expect(restarted.sign).not.toHaveBeenCalled();
   });

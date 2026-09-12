@@ -242,6 +242,40 @@ describe.skipIf(!configuredUrl)('PostgreSQL agent run integration', () => {
     );
   });
 
+  it('recovers a released NULL-identifier tombstone without signing or submission', async () => {
+    const run = newRun('run_integration_null_payment_identifier');
+    await repository.createRun(run);
+    const claim = await repository.claimExecution(run.id, 'owner_null_attempt');
+    if (!claim) throw new Error('Expected integration claim');
+    await claim.persist(payingRun(run));
+    await claim.beginSigning({
+      payer: '0.0.7162784',
+      receiver: '0.0.123456',
+      amountAtomic: '1000000',
+      asset: '0.0.0',
+      network: 'hedera:testnet',
+    });
+    expect(
+      await repository.reconcileTombstonedRun(run.id, fixtureReferenceTime),
+    ).toBe(false);
+    expect((await repository.getRun(run.id))?.status).toBe('PAYING');
+    await claim.release();
+    expect(
+      await repository.reconcileTombstonedRun(run.id, fixtureReferenceTime),
+    ).toBe(true);
+    const failed = await repository.getRun(run.id);
+    expect(failed?.status).toBe('FAILED');
+    expect(failed?.error?.code).toBe('PAYMENT_FAILED');
+    expect(failed?.paymentReceipt).toBeNull();
+    const tombstone = await pool.query<{ payment_identifier: string | null }>(
+      `SELECT payment_identifier
+         FROM agent_run_payment_tombstones
+        WHERE run_id = $1`,
+      [run.id],
+    );
+    expect(tombstone.rows[0]?.payment_identifier).toBeNull();
+  });
+
   it('rejects generic tombstoned failure and permits only expired authoritative absence', async () => {
     const run = newRun('run_integration_failure_guard');
     await repository.createRun(run);

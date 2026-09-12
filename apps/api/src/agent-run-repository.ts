@@ -331,7 +331,8 @@ export class InMemoryAgentRunRepository implements AgentRunRepository {
       run.status === 'FAILED'
     )
       return false;
-    if (run.paymentReceipt === null) return false;
+    const tombstone = this.paymentTombstones.get(runId);
+    if (tombstone?.attempt && run.paymentReceipt === null) return false;
     this.runs.set(runId, createFailureSnapshot(run, occurredAt));
     return true;
   }

@@ -194,12 +194,13 @@ export function createAgentRunService(
           runId,
           ownership,
         }).execute();
-        if (
-          outcome.status === 'PAYING' &&
-          outcome.paymentReceipt === null &&
-          (await repository.getPaymentReconciliation(runId))
-        )
-          scheduleRun(runId);
+        if (outcome.status === 'PAYING' && outcome.paymentReceipt === null) {
+          const recoveryTime = TimestampSchema.parse(clock());
+          if (await repository.reconcileTombstonedRun(runId, recoveryTime))
+            return;
+          if (await repository.getPaymentReconciliation(runId))
+            scheduleRun(runId);
+        }
       } catch {
         try {
           const recoveryTime = TimestampSchema.parse(clock());

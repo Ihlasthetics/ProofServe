@@ -65,9 +65,11 @@ The durable Y05 owner also records the SDK-derived transaction ID, exact expecte
 transfer fields, and transaction-valid-until time before submission. A final
 atomic ownership/version/validity fence runs immediately before transport. Signing
 failures, timeouts, and ambiguous submissions retain their tombstones; raw signed
-material is never persisted. Without a durable receipt they remain nonterminal in
-`PAYING`; only exact-transaction reconciliation may recover a receipt or record an
-authoritative post-expiry `PAYMENT_FAILED` outcome.
+material is never persisted. After ownership ends, a tombstone without a recorded
+transaction ID is safely terminalized because submission was never authorized. A
+recorded transaction remains nonterminal in `PAYING`; only exact-transaction
+reconciliation may recover its receipt or record an authoritative post-expiry
+`PAYMENT_FAILED` outcome.
 
 The default owner is shared within this loaded module, with capacity 4096. Inject
 one shared `createInMemoryBuyerOwnership(capacity)` instance for a different limit;
