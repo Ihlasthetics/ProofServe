@@ -1,160 +1,278 @@
+'use client';
+
 import {
-  activeServiceFixture,
-  apiErrorFixture,
-  draftServiceFixture,
-  fixtureNotice,
-  fixtureReferenceTime,
-  unverifiedProviderFixture,
-  verifiedProviderFixture,
-  type Provider,
-  type ServiceListing,
-} from '@proofserve/shared';
-import type { ReactNode } from 'react';
-import { ProviderVerificationBadge } from './provider-verification-badge';
+  useEffect,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+} from 'react';
+import {
+  createRegistrySession,
+  type RegistryState,
+} from '../lib/registry-session';
+import { providerFormData, draftFormData } from '../lib/onboarding-form-data';
 import { ServiceStatusBadge } from './service-status-badge';
+import { ServiceCard } from './service-card';
 
-function OnboardingSnapshot({
-  id,
-  title,
-  provider,
-  service,
-  children,
+function fields(event: FormEvent<HTMLFormElement>) {
+  event.preventDefault();
+  return new FormData(event.currentTarget);
+}
+
+export function RegistryView({
+  state,
+  session,
 }: {
-  id: string;
-  title: string;
-  provider: Provider;
-  service?: ServiceListing;
-  children: ReactNode;
+  state: RegistryState;
+  session: ReturnType<typeof createRegistrySession>;
 }) {
-  if (service && service.providerId !== provider.id)
-    throw new Error('Service and provider must match.');
-
+  const checkedAt = state.listingCheckedAt;
+  const eligible = state.listing?.services.filter(
+    ({ service, provider }) =>
+      checkedAt !== null &&
+      service.status === 'ACTIVE' &&
+      provider.verification.status === 'VERIFIED' &&
+      provider.verification.verifiedAt <= checkedAt &&
+      checkedAt < provider.verification.expiresAt,
+  );
   return (
-    <article className="onboarding-card" aria-labelledby={id}>
-      <p className="eyebrow">Fictional onboarding snapshot</p>
-      <h3 id={id}>{title}</h3>
-      <p className="provider-name">{provider.displayName}</p>
-      <ProviderVerificationBadge
-        verification={provider.verification}
-        referenceTime={fixtureReferenceTime}
-      />
-      {service && (
-        <div className="onboarding-service">
-          <p>{service.name}</p>
-          <ServiceStatusBadge status={service.status} />
+    <>
+      <section id="provider-onboarding" aria-labelledby="onboarding-heading">
+        <p className="eyebrow">Live registry · Hedera testnet</p>
+        <h2 id="onboarding-heading">Provider onboarding</h2>
+        <p className="notice">
+          Registration does not verify a provider. World verification is not
+          available here. Draft services are not discoverable or payable.
+        </p>
+        <p>
+          Created records are kept in this page session. Reloading loses this
+          page’s references; the registry may still retain the records.
+        </p>
+        <div className="onboarding-grid">
+          <article
+            className="onboarding-card"
+            aria-labelledby="provider-heading"
+          >
+            <h3 id="provider-heading">1. Create provider</h3>
+            <form
+              aria-labelledby="provider-heading"
+              aria-busy={!!state.pending.provider}
+              onSubmit={(event) => {
+                const data = fields(event);
+                void session.createProvider(providerFormData(data));
+              }}
+            >
+              <fieldset disabled={!!state.pending.provider || !!state.provider}>
+                <legend>Provider details</legend>
+                <label htmlFor="display-name">Display name</label>
+                <input
+                  id="display-name"
+                  name="displayName"
+                  required
+                  maxLength={120}
+                />
+                <label htmlFor="payout-account">Hedera payout account</label>
+                <input
+                  id="payout-account"
+                  name="payoutAccount"
+                  required
+                  aria-describedby="payout-help"
+                />
+                <p id="payout-help">
+                  Numeric account ID, for example 0.0.123456. Never enter a
+                  private key.
+                </p>
+                <button type="submit">
+                  {state.pending.provider
+                    ? 'Creating provider…'
+                    : 'Create provider'}
+                </button>
+              </fieldset>
+            </form>
+            <p role="status">
+              {state.pending.provider
+                ? 'Provider creation pending.'
+                : state.provider
+                  ? `Provider created: ${state.provider.displayName}. At registration: Unverified — no current liveness verification.`
+                  : ''}
+            </p>
+            {state.provider && (
+              <p>
+                Provider ID: <code>{state.provider.id}</code>. This page did not
+                perform World verification; the registration record is not a
+                current verification check.
+              </p>
+            )}
+            {state.errors.provider && (
+              <p role="alert" className="notice">
+                {state.errors.provider}
+              </p>
+            )}
+          </article>
+          <article className="onboarding-card" aria-labelledby="draft-heading">
+            <h3 id="draft-heading">2. Create draft service</h3>
+            {!state.provider && (
+              <p>Create a provider first to enable this form.</p>
+            )}
+            <form
+              aria-labelledby="draft-heading"
+              aria-busy={!!state.pending.draft}
+              onSubmit={(event) => {
+                const data = fields(event);
+                void session.createDraft(draftFormData(data));
+              }}
+            >
+              <fieldset
+                disabled={
+                  !state.provider || !!state.pending.draft || !!state.draft
+                }
+              >
+                <legend>Support ticket triage</legend>
+                <label htmlFor="service-name">Service name</label>
+                <input id="service-name" name="name" required maxLength={120} />
+                <label htmlFor="service-description">Description</label>
+                <textarea
+                  id="service-description"
+                  name="description"
+                  required
+                  maxLength={1000}
+                />
+                <label htmlFor="service-price">
+                  Price per request (tinybars)
+                </label>
+                <input
+                  id="service-price"
+                  name="amountAtomic"
+                  inputMode="numeric"
+                  pattern="[1-9][0-9]*"
+                  required
+                  aria-describedby="price-help"
+                />
+                <p id="price-help">
+                  100000000 tinybars = 1 HBAR on Hedera testnet. The registry
+                  selects the endpoint and payout recipient.
+                </p>
+                <button type="submit">
+                  {state.pending.draft
+                    ? 'Creating draft…'
+                    : 'Create draft service'}
+                </button>
+              </fieldset>
+            </form>
+            <p role="status">
+              {state.pending.draft
+                ? 'Draft creation pending.'
+                : state.draft
+                  ? state.draft.status === 'ACTIVE'
+                    ? `Registry confirmed activation: ${state.draft.name}. Eligibility is shown only by a successful registry listing; this page did not perform World verification.`
+                    : `Draft created: ${state.draft.name}. Not discoverable or payable.`
+                  : ''}
+            </p>
+            {state.errors.draft && (
+              <p role="alert" className="notice">
+                {state.errors.draft}
+              </p>
+            )}
+            {state.draft && (
+              <div className="onboarding-service">
+                <p>
+                  Service ID: <code>{state.draft.id}</code>
+                </p>
+                <ServiceStatusBadge status={state.draft.status} />
+                <p>
+                  Activation requires current provider verification. You can ask
+                  the registry to check this gate.
+                </p>
+                <button
+                  type="button"
+                  disabled={
+                    !!state.pending.activation ||
+                    state.draft.status === 'ACTIVE'
+                  }
+                  onClick={() => {
+                    void session.activate();
+                  }}
+                >
+                  {state.pending.activation
+                    ? 'Checking activation…'
+                    : state.draft.status === 'ACTIVE'
+                      ? 'Registry service is active'
+                      : 'Attempt activation'}
+                </button>
+                <p role="status">
+                  {state.pending.activation
+                    ? state.draft.status === 'ACTIVE'
+                      ? 'Registry activation confirmed. Reconciling eligible services.'
+                      : 'Activation check pending. No provider verification was performed here.'
+                    : ''}
+                </p>
+              </div>
+            )}
+            {state.errors.activation && (
+              <p role="alert" className="notice">
+                {state.errors.activation}
+              </p>
+            )}
+          </article>
         </div>
-      )}
-      <div className="onboarding-explanation">{children}</div>
-    </article>
+      </section>
+      <section id="service-preview" aria-labelledby="preview-heading">
+        <h2 id="preview-heading">Eligible services</h2>
+        <p>
+          Live registry snapshot. Discovery and payment require fresh server
+          checks; this page does not make payments.
+        </p>
+        <button
+          type="button"
+          disabled={!!state.pending.listing}
+          onClick={() => {
+            void session.refresh();
+          }}
+        >
+          {state.pending.listing ? 'Loading services…' : 'Refresh services'}
+        </button>
+        <p role="status">
+          {state.pending.listing
+            ? 'Loading eligible services.'
+            : eligible
+              ? `${eligible.length} eligible services returned.`
+              : ''}
+        </p>
+        {state.errors.listing && (
+          <p role="alert" className="notice">
+            {state.errors.listing}
+          </p>
+        )}
+        {eligible?.length === 0 && (
+          <p>
+            No eligible services are available. Unverified providers and draft
+            services are excluded.
+          </p>
+        )}
+        <div className="onboarding-grid">
+          {eligible?.map(({ service, provider }) => (
+            <ServiceCard
+              key={service.id}
+              service={service}
+              provider={provider}
+              referenceTime={state.listingCheckedAt!}
+            />
+          ))}
+        </div>
+      </section>
+    </>
   );
 }
 
 export function ProviderOnboarding() {
-  return (
-    <section id="provider-onboarding" aria-labelledby="onboarding-heading">
-      <p className="eyebrow">Fixture/demo preview</p>
-      <h2 id="onboarding-heading">Provider onboarding demo</h2>
-      <p className="notice">{fixtureNotice}</p>
-      <p>
-        These are separate fictional snapshots, not a live onboarding session or
-        a real World verification result. No verification request is sent, no
-        service is activated, and no payment or authentication occurs.
-      </p>
-      <p className="reference">
-        All verification badges use the fixed fixture reference time:{' '}
-        <time dateTime={fixtureReferenceTime}>{fixtureReferenceTime}</time>.
-        Actual verification freshness is enforced by the server.
-      </p>
-      <div className="onboarding-grid">
-        <OnboardingSnapshot
-          id="onboarding-draft"
-          title="Draft service"
-          provider={unverifiedProviderFixture}
-          service={draftServiceFixture}
-        >
-          <p>
-            The demo service is a draft. An unverified provider may create a
-            draft, but it is not discoverable or payable.
-          </p>
-        </OnboardingSnapshot>
-        <OnboardingSnapshot
-          id="onboarding-unverified"
-          title="Unverified provider"
-          provider={unverifiedProviderFixture}
-        >
-          <p>
-            No successful verification is recorded in this fixture. Current
-            provider verification is required before service activation.
-          </p>
-        </OnboardingSnapshot>
-        <OnboardingSnapshot
-          id="onboarding-blocked"
-          title="Activation blocked"
-          provider={unverifiedProviderFixture}
-          service={draftServiceFixture}
-        >
-          <p className="notice">
-            Demo activation blocked: {apiErrorFixture.error.message}
-          </p>
-          <p>
-            Fixture error: <code>{apiErrorFixture.error.code}</code>. The
-            service remains draft; the provider remains unverified.
-          </p>
-        </OnboardingSnapshot>
-        <OnboardingSnapshot
-          id="onboarding-pending"
-          title="Verification pending"
-          provider={unverifiedProviderFixture}
-          service={draftServiceFixture}
-        >
-          <p>
-            Demo pending presentation only: this illustrates waiting for a
-            server response. No request is running and this view will not
-            advance automatically.
-          </p>
-          <p>Activation stays blocked. Pending does not mean verified.</p>
-        </OnboardingSnapshot>
-        <OnboardingSnapshot
-          id="onboarding-verified"
-          title="Verified provider"
-          provider={verifiedProviderFixture}
-        >
-          <p>
-            This shared fixture represents a recently verified human operator at
-            the reference time. It is not evidence of a real World check or a
-            guarantee of service quality.
-          </p>
-          <p>Provider verification alone does not activate a service.</p>
-        </OnboardingSnapshot>
-        <OnboardingSnapshot
-          id="onboarding-active"
-          title="Active service"
-          provider={verifiedProviderFixture}
-          service={activeServiceFixture}
-        >
-          <p>
-            This separate fixture shows an active service with current
-            verification at the reference time. No activation was performed
-            here. Actual discovery and payment require current server checks.
-          </p>
-        </OnboardingSnapshot>
-        <OnboardingSnapshot
-          id="onboarding-error"
-          title="Verification error"
-          provider={unverifiedProviderFixture}
-          service={draftServiceFixture}
-        >
-          <p className="notice">
-            Demo error presentation only: verification could not be completed.
-            No real World attempt failed.
-          </p>
-          <p>
-            The provider remains unverified and activation stays blocked. In the
-            future live flow, retry verification; a failed attempt must never
-            activate the service.
-          </p>
-        </OnboardingSnapshot>
-      </div>
-    </section>
+  const [session] = useState(() => createRegistrySession());
+  const state = useSyncExternalStore(
+    session.subscribe,
+    session.getSnapshot,
+    session.getSnapshot,
   );
+  useEffect(() => {
+    void session.refresh();
+  }, [session]);
+  return <RegistryView state={state} session={session} />;
 }

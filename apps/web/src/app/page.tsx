@@ -1,9 +1,4 @@
-import {
-  activeServiceFixture,
-  verifiedProviderFixture,
-} from '@proofserve/shared';
 import { PageShell } from '../components/page-shell';
-import { ServiceCard } from '../components/service-card';
 import { ProviderOnboarding } from '../components/provider-onboarding';
 
 export default function Page() {
@@ -15,30 +10,23 @@ export default function Page() {
           Discover AI services operated by recently verified humans.
         </h1>
         <p className="notice">
-          Wireframe uses fictional development/test content. It is not evidence
-          of completed verification or payment.
+          Provider and draft-service registration use the live registry.
+          Registration does not establish verification or payment eligibility.
         </p>
         <p>
           ProofServe is planned as a registry where autonomous agents discover
           eligible AI services and pay per request.
         </p>
         <a className="explore" href="#service-preview">
-          Explore the service preview <span aria-hidden="true">↗</span>
+          Explore eligible services <span aria-hidden="true">↗</span>
         </a>
-      </section>
-      <section id="service-preview" aria-labelledby="preview-heading">
-        <h2 id="preview-heading">Service preview</h2>
-        <ServiceCard
-          service={activeServiceFixture}
-          provider={verifiedProviderFixture}
-        />
       </section>
       <ProviderOnboarding />
       <section id="how-it-works" aria-labelledby="how-heading">
         <p className="eyebrow">The intended future flow</p>
         <h2 id="how-heading">How it works</h2>
         <p>
-          Real integrations are not implemented. This preview does not perform
+          Registry registration is connected. This page does not perform World
           verification, service execution, or payment.
         </p>
         <ol className="steps">

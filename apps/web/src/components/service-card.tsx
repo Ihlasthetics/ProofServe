@@ -1,8 +1,4 @@
-import {
-  fixtureReferenceTime,
-  type Provider,
-  type ServiceListing,
-} from '@proofserve/shared';
+import { type Provider, type ServiceListing } from '@proofserve/shared';
 import { formatHbar } from '../lib/format-hbar';
 import { ServiceStatusBadge } from './service-status-badge';
 import { ProviderVerificationBadge } from './provider-verification-badge';
@@ -10,16 +6,21 @@ import { ProviderVerificationBadge } from './provider-verification-badge';
 export function ServiceCard({
   service,
   provider,
+  referenceTime,
 }: {
   service: ServiceListing;
   provider: Provider;
+  referenceTime: string;
 }) {
   if (service.providerId !== provider.id)
     throw new Error('Service and provider must match.');
   return (
-    <article className="service-card" aria-labelledby={service.id}>
-      <p className="eyebrow">Fictional development/test service preview</p>
-      <h3 id={service.id}>{service.name}</h3>
+    <article
+      className="service-card"
+      aria-labelledby={`registry-service-${service.id}`}
+    >
+      <p className="eyebrow">Registry service snapshot</p>
+      <h3 id={`registry-service-${service.id}`}>{service.name}</h3>
       <p>{service.description}</p>
       <dl>
         <div>
@@ -28,10 +29,7 @@ export function ServiceCard({
         </div>
         <div>
           <dt>Price per request</dt>
-          <dd>
-            {formatHbar(service.paymentRequirements.amountAtomic)} HBAR —
-            fictional example
-          </dd>
+          <dd>{formatHbar(service.paymentRequirements.amountAtomic)} HBAR</dd>
         </div>
         <div>
           <dt>Network</dt>
@@ -44,12 +42,12 @@ export function ServiceCard({
         <p className="provider-name">{provider.displayName}</p>
         <ProviderVerificationBadge
           verification={provider.verification}
-          referenceTime={fixtureReferenceTime}
+          referenceTime={referenceTime}
         />
         <p className="reference">
-          Fictional status at{' '}
-          <time dateTime={fixtureReferenceTime}>{fixtureReferenceTime}</time>;
-          not a live verification result.
+          Status checked at{' '}
+          <time dateTime={referenceTime}>{referenceTime}</time>; eligibility
+          must be rechecked before payment.
         </p>
       </div>
     </article>
