@@ -1,9 +1,11 @@
 # Y06 public deployment handoff
 
-Status: preparation only, on `chore/y06-public-deployment-final`. I04 is merged
-and its World verification proxy requirements are incorporated below. No public
-resources or URLs have been created by this pass. G4 and Y06 remain incomplete.
-I05 is pending, and T05 remains outside this pass.
+Status: Y06 public deployment and backend G4 completed on 2026-09-12 from
+`4580b20c67135fd857389c919972112235961f44` on
+`chore/y06-public-deployment-final`. I04 is merged and its World verification
+proxy requirements are incorporated below. I05 is still pending, so the final
+browser execution-timeline demonstration remains outstanding. T05 remains
+outside this pass.
 
 ## Processes and commands
 
@@ -31,12 +33,23 @@ that wakes a sleeping API may resume discovery, signing, Hedera testnet payment,
 settlement reconciliation or protected-service execution. Treat starting the API
 as a payment-capable operation, never as a health check.
 
-## Selected hackathon hosting arrangement
+## Public hackathon hosting arrangement
 
-Use Render Free for the hackathon demonstration: three Node Web Services (Web,
-API including the buyer agent, and protected triage) plus one free Render
-PostgreSQL database. No provider manifest, paid resources or automatic
-deployments are introduced here, and this pass does not create those resources.
+The completed deployment uses Render Free for the hackathon demonstration:
+three Node Web Services (Web, API including the buyer agent, and protected
+triage) plus one free Render PostgreSQL database. All three services were
+deployed from commit `4580b20c67135fd857389c919972112235961f44`.
+
+| Service         | Public URL                                           | Recorded check                                                    |
+| --------------- | ---------------------------------------------------- | ----------------------------------------------------------------- |
+| Web             | https://proofserve-y06-web.onrender.com              | Public deployment recorded                                        |
+| API             | https://proofserve-y06-api.onrender.com              | `/health` returned HTTP 200                                       |
+| Triage          | https://proofserve-y06-triage.onrender.com           | `/health` returned HTTP 200                                       |
+| Triage endpoint | https://proofserve-y06-triage.onrender.com/v1/triage | Unpaid request returned HTTP 402 with a `Payment-Required` header |
+
+The PostgreSQL migration `apps/api/migrations/001_agent_runs.sql` was applied
+successfully. Auto-deploy remained disabled for all three services, and the API
+remained a single instance. No restart or redeployment occurred during G4.
 
 For each application, leave Root Directory unset so npm can access all workspaces.
 Use `npm ci --include=dev && npm run build:web` as the web build command, substituting
@@ -61,6 +74,10 @@ demonstration during one active session. The free PostgreSQL database expires
 after 30 days. This arrangement is hackathon/demo hosting, not production
 durability.
 
+Automatic uptime pings remain prohibited. Automatic API deployment also remains
+prohibited: every API restart or deployment must pass the database safety gate
+documented below before the process is started or woken.
+
 Render supports [monorepos](https://render.com/docs/monorepo-support),
 [Node web services](https://render.com/docs/web-services), and
 [managed HTTPS](https://render.com/docs/tls). Its
@@ -69,6 +86,77 @@ provides TLS. For this application, use a database hostname whose certificate
 passes Node hostname and CA verification; verify this before accepting the setup.
 Do not assume a private/internal hostname satisfies the existing TLS policy.
 Restrict database network access to the API and approved migration operator.
+
+## Public onboarding evidence
+
+| Record   | ID                                     | Name                         |
+| -------- | -------------------------------------- | ---------------------------- |
+| Provider | `afdb746b-0f24-4ee5-bb78-d8e3bfd591a1` | ProofServe Y06 Live Provider |
+| Service  | `c2b1fd11-ddc7-43c9-b0f2-e9e70ce73e84` | ProofServe Public Triage     |
+
+Real World QR/selfie verification was completed using an Android phone, after
+which the backend provider status became `VERIFIED`. Verification did not
+automatically activate the service. Activation was a separate explicit request;
+after it, the service became `ACTIVE` and appeared in the eligible registry
+listing.
+
+The active service advertised a price of exactly 1 tinybar, receiver
+`0.0.10438900`, and endpoint
+https://proofserve-y06-triage.onrender.com/v1/triage, matching the public triage
+endpoint.
+
+## Backend G4 evidence
+
+### First safe failed run
+
+Run `fbbc62ef-ad19-4c36-b798-785d5d1684e1` ended `FAILED` after `SELECTED`. It
+never entered `PAYMENT_REQUIRED`, `PAYING`, or `PAID`; it produced no payment
+receipt, and no automatic retry occurred. The likely cause was Render Free
+triage spin-down. That cause is an inference, not a proven fact. A later manual
+unpaid warm-up returned the expected HTTP 402 challenge.
+
+### Successful run
+
+Run `c77644a4-7a77-421c-915d-43003624634a` selected service
+`c2b1fd11-ddc7-43c9-b0f2-e9e70ce73e84` and recorded this state sequence:
+
+```text
+CREATED
+DISCOVERING
+SELECTED
+PAYMENT_REQUIRED
+PAYING
+PAID
+EXECUTING
+COMPLETED
+```
+
+Exactly 1 tinybar was settled on Hedera testnet. The transaction ID was
+`0.0.7162784@1789248503.871191363`, with settlement time
+`2026-09-12T21:28:37.804Z` and [HashScan transaction evidence](https://hashscan.io/testnet/transaction/0.0.7162784-1789248503-871191363).
+
+Gemini returned:
+
+| Field            | Value                                                                          |
+| ---------------- | ------------------------------------------------------------------------------ |
+| Category         | Account Access                                                                 |
+| Urgency          | high                                                                           |
+| Summary          | User is unable to log in or access their account.                              |
+| Suggested action | Verify user identity and send account recovery or password reset instructions. |
+
+The final run status was `COMPLETED` with no error.
+
+### Final PostgreSQL safety evidence
+
+The final inspection transaction completed read-only and returned:
+
+| Check                   | Result |
+| ----------------------- | ------ |
+| `agent_runs` count      | 2      |
+| Payment tombstone count | 1      |
+| Nonterminal run count   | 0      |
+
+Durable run and payment evidence was not deleted, reset, or manually altered.
 
 ## Runtime environment inventory
 
@@ -197,7 +285,7 @@ ORDER BY r.created_at, r.id;
 COMMIT;
 ```
 
-For the initial deployment, use the newly migrated database and require
+For any initial deployment to a newly migrated database, require
 `agent_run_count = 0`, `payment_tombstone_count = 0` and zero rows from the second
 result. Perform this check before configuring the funded payer credentials and
 before starting the API. A previously used or nonempty database does not satisfy
@@ -234,53 +322,32 @@ restart; do not seed a verified status. Payment tombstones are permanent safety
 records: preserve them and their associated runs, transaction IDs and receipts.
 Never delete payment tables or records to reset a demo.
 
-## Manual deployment and final acceptance
+## Completed deployment and remaining acceptance
 
-1. Human diff review first. Commit/push/PR/merge require separate authorization.
-2. Approve hosting and provision database plus three applications. Reserve stable
-   HTTPS origins on the selected Render Free arrangement. In this guide
-   `WEB_PUBLIC_URL` and `API_PUBLIC_URL` are labels, not new application
-   variables. PostgreSQL does not need a public HTTP URL.
-3. Configure Web and service settings separately. Confirm World access,
-   RP/action/environment and public web-origin settings with I04's owner; confirm
-   the receiver, Blocky402 access, Gemini model access and outbound network
-   connectivity. Keep automatic deploys disabled, and keep the API stopped without
-   funded payer credentials.
-4. Apply the existing database migration to the newly provisioned database. Run
-   the pre-start inspection and require both counts and the nonterminal result to
-   be zero. Only then fund the testnet payer, configure its credentials and start
-   the API. Builds may run before this gate, but no API start, restart, cold start,
-   wake or health request may bypass it. Deploy service and web independently. Set
-   Web `REGISTRY_API_ORIGIN`, Web `PROOFSERVE_API_ORIGIN`, and API
-   `AGENT_REGISTRY_BASE_URL` to the same API HTTPS origin. Set both backend
-   `TRIAGE_SERVICE_ENDPOINT` values to the same service HTTPS URL including
-   `/v1/triage`. Do not add an agent URL.
-5. After the API startup gate has passed and the API is already running, check
-   public web, API `/health` and service `/health` without credentials in a
-   logged-out browser. Web and service health checks are non-payment operations.
-   API `/health` is allowed only after the startup gate; it must never be used to
-   wake an ungated API. Send a valid unpaid ticket POST to `/v1/triage` and verify
-   HTTP 402 with Hedera testnet requirements; this must not sign or pay. Health
-   responses do not prove World, Gemini, settlement or database recovery works.
-6. Infrastructure deployment may begin with merged I04 before I05. After I05
-   merges, validate/build and redeploy the latest approved `main` revision using
-   the maintenance procedure. I05 is required for final browser G4 completion.
-   Record the deployed revision and all three public URLs.
-7. Warm Web and triage. Start or wake the API only after repeating the pre-start
-   gate. If the API restarted, recreate the provider and perform World verification
-   again. With separately authorized real testnet payment testing, complete public
-   G4 during that active session:
-   unverified activation blocked → real World verification → activation → discovery
-   → 402 → actual payment → model result → persisted receipt and HashScan link.
-   Check failure/cancellation states and never substitute fake successes.
-8. Record actual public G4 evidence and time. Only after G4 passes is Y06 complete.
-   Hand the stable URLs to T05's owner; do not start T05 in this task.
+Y06 public deployment and the backend G4 run are complete. The public URLs,
+onboarding result, payment evidence, model result, and final read-only database
+inspection are recorded above. The backend G4 evidence does not complete I05:
+the final browser execution-timeline demonstration remains outstanding until I05
+is implemented and accepted.
 
-## Validation for this pass
+For every later manual deployment, restart, cold start, or wake:
 
-For this small integration pass, do not run full repository validation. Run
-Prettier only on `docs/deployment.md` and run
-`git diff --check origin/main HEAD`. Do not run builds or a funded payment during
-this pass. Record outcomes in the human handoff. Documentation checks do not
-establish public hosting, database migration success, World access or a real
-payment.
+1. Stop new run submissions, allow active runs to finish, and execute the exact
+   read-only database safety gate above.
+2. Start or wake the API only when the nonterminal result has zero rows, or when
+   a human payment owner explicitly authorizes recovery of every listed run.
+3. Keep exactly one API instance, automatic API deployment disabled, and the API
+   free of generic uptime pings or other automatic keep-awake traffic.
+4. If the API restarts, recreate the provider and service and perform real World
+   verification again because registry and World verification state are held in
+   process memory. Never seed a verified status.
+5. Preserve durable run records, payment tombstones, transaction IDs, and
+   receipts. Never delete or reset them to repeat a demonstration, and never
+   substitute fake verification or payment success.
+
+## Validation for this documentation update
+
+Format only `docs/deployment.md`, then run `git diff --check` and
+`git diff --check origin/main HEAD`. Do not install dependencies, run builds,
+restart or redeploy a service, or initiate another payment during this
+documentation-only pass.
