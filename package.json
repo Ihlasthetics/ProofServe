@@ -23,6 +23,12 @@
     "test": "npm run test --workspaces",
     "prebuild": "npm run prepare:agent",
     "build": "npm run build --workspaces",
+    "build:web": "npm run prepare:shared && npm run build --workspace=@proofserve/web",
+    "build:api": "npm run prepare:agent && npm run build --workspace=@proofserve/api",
+    "build:service": "npm run prepare:shared && npm run build --workspace=@proofserve/service",
+    "start:web": "npm run start --workspace=@proofserve/web -- --hostname 0.0.0.0",
+    "start:api": "npm run start --workspace=@proofserve/api",
+    "start:service": "npm run start --workspace=@proofserve/service",
     "validate": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build"
   },
   "devDependencies": {
