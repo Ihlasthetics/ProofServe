@@ -23,8 +23,10 @@ import {
 
 const errors = {
   VALIDATION_ERROR: [400, 'Invalid request.'],
+  UNAUTHORIZED: [401, 'Authentication is required.'],
   PROVIDER_NOT_FOUND: [404, 'Provider not found.'],
   SERVICE_NOT_FOUND: [404, 'Service not found.'],
+  RUN_NOT_FOUND: [404, 'Agent run not found.'],
   PROVIDER_VERIFICATION_REQUIRED: [
     403,
     'Current provider verification is required; suspended service reactivation requires renewed verification.',

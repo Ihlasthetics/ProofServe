@@ -1,6 +1,14 @@
 import { expect, it } from 'vitest';
 import { createInMemoryBuyerOwnership } from '../src/buyer-ownership.js';
 
+const expectation = {
+  payer: '0.0.1',
+  receiver: '0.0.2',
+  amountAtomic: '1',
+  asset: '0.0.0',
+  network: 'hedera:testnet',
+};
+
 it('releases temporary claims without consuming capacity and fences stale claims', () => {
   const owner = createInMemoryBuyerOwnership(1);
   for (let i = 0; i < 10; i++) owner.claim(`failed_${i}`).release();
@@ -8,13 +16,13 @@ it('releases temporary claims without consuming capacity and fences stale claims
   old.release();
   const current = owner.claim('retry');
   old.release();
-  expect(() => old.beginSigning()).toThrow();
+  expect(() => old.beginSigning(expectation)).toThrow();
   expect(() => owner.claim('retry')).toThrow();
-  current.beginSigning();
+  current.beginSigning(expectation);
   current.release();
   expect(() => owner.claim('retry')).toThrow();
   const full = owner.claim('new');
-  expect(() => full.beginSigning()).toThrow();
+  expect(() => full.beginSigning(expectation)).toThrow();
   full.release();
 });
 

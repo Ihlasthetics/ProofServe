@@ -9,6 +9,11 @@ import {
 } from '@x402/core/http';
 import { parsePaymentRequired } from '@x402/core/schemas';
 import type { PaymentRequired } from '@x402/core/types';
+import type { BuyerPaymentAttempt } from './buyer-ownership.js';
+import {
+  canonicalHederaTransactionId,
+  hederaTransactionPath,
+} from './hedera-payment-transaction.js';
 
 export class BuyerError extends Error {
   constructor(
@@ -98,7 +103,9 @@ export function validatedOffer(
 /** Same native/path transaction formats and canonical URL as merged Y03. */
 export function validatedSettlement(
   response: Response,
+  expected: BuyerPaymentAttempt,
   feePayer: unknown,
+  requirements: PaymentRequirements,
 ): { transactionId: string; transactionUrl: string } {
   const header = response.headers.get('payment-response');
   if (!header || header.length > 16_384) throw new BuyerError();
@@ -109,23 +116,32 @@ export function validatedSettlement(
     typeof settlement.transaction !== 'string'
   )
     throw new BuyerError();
-  const native =
-    /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)@([1-9][0-9]*)\.([0-9]{1,9})$/;
-  const path =
-    /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-([1-9][0-9]*)-([0-9]{1,9})$/;
-  const match =
-    native.exec(settlement.transaction) ?? path.exec(settlement.transaction);
-  if (!match) throw new BuyerError();
-  const [, shard, realm, account, seconds, nanos] = match;
-  const accountId = `${shard}.${realm}.${account}`;
-  if (!nanos || accountId !== feePayer) throw new BuyerError();
-  const transactionUrl = `https://hashscan.io/testnet/transaction/${accountId}-${seconds}-${nanos.padStart(9, '0')}`;
+  const transactionId = canonicalHederaTransactionId(settlement.transaction);
+  const expectedFeePayer = HederaAccountIdSchema.safeParse(feePayer);
+  const expectedRequirements =
+    PaymentRequirementsSchema.safeParse(requirements);
   if (
-    response.headers.get('x-proofserve-hedera-transaction-id') !==
-      settlement.transaction ||
+    !expectedFeePayer.success ||
+    !expectedRequirements.success ||
+    transactionId !== expected.transactionId ||
+    !transactionId.startsWith(`${expectedFeePayer.data}@`) ||
+    expected.payer.length === 0 ||
+    expected.receiver !== expectedRequirements.data.payTo ||
+    expected.amountAtomic !== expectedRequirements.data.amountAtomic ||
+    expected.asset !== expectedRequirements.data.asset ||
+    expected.network !== expectedRequirements.data.network ||
+    expected.network !== 'hedera:testnet' ||
+    expected.asset !== '0.0.0'
+  )
+    throw new BuyerError();
+  const transactionUrl = `https://hashscan.io/testnet/transaction/${hederaTransactionPath(transactionId)}`;
+  if (
+    canonicalHederaTransactionId(
+      response.headers.get('x-proofserve-hedera-transaction-id'),
+    ) !== transactionId ||
     response.headers.get('x-proofserve-hedera-transaction-url') !==
       transactionUrl
   )
     throw new BuyerError();
-  return { transactionId: settlement.transaction, transactionUrl };
+  return { transactionId, transactionUrl };
 }
