@@ -73,7 +73,7 @@ it('reflects validated activation state and reconciles listing without inventing
   );
   expect(markup).toContain('Service: Active');
   expect(markup).not.toContain('Service: Draft');
-  expect(markup).toContain('this page did not perform World verification');
+  expect(markup).toContain('local provider snapshot remains UNVERIFIED');
   expect(markup).toContain('1 eligible services returned.');
   await session.activate();
   expect(fetcher).toHaveBeenCalledTimes(4);
