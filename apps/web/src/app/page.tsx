@@ -1,5 +1,6 @@
 import { PageShell } from '../components/page-shell';
 import { ProviderOnboarding } from '../components/provider-onboarding';
+import { AgentRunDemo } from '../components/agent-run-demo';
 
 export default function Page() {
   return (
@@ -14,25 +15,28 @@ export default function Page() {
           Registration does not establish verification or payment eligibility.
         </p>
         <p>
-          ProofServe is planned as a registry where autonomous agents discover
-          eligible AI services and pay per request.
+          ProofServe lets an autonomous agent discover eligible AI services, pay
+          per request, and return a recorded execution timeline.
         </p>
-        <a className="explore" href="#service-preview">
-          Explore eligible services <span aria-hidden="true">↗</span>
+        <a className="explore" href="#agent-run">
+          Run the agent demo <span aria-hidden="true">↗</span>
         </a>
       </section>
       <ProviderOnboarding />
+      <AgentRunDemo />
       <section id="how-it-works" aria-labelledby="how-heading">
-        <p className="eyebrow">The intended future flow</p>
+        <p className="eyebrow">Connected demo flow</p>
         <h2 id="how-heading">How it works</h2>
         <p>
-          Registry registration is connected. This page does not perform World
-          verification, service execution, or payment.
+          Registry registration is connected. Provider onboarding, eligibility
+          discovery, agent execution, and payment status use backend-confirmed
+          records.
         </p>
         <ol className="steps">
           <li>Register a draft service.</li>
           <li>Complete liveness verification before activation.</li>
-          <li>An agent discovers an eligible service and pays per request.</li>
+          <li>Start an agent run with a maximum budget.</li>
+          <li>The agent discovers an eligible service and pays per request.</li>
           <li>View the triage result and receipt.</li>
         </ol>
       </section>
