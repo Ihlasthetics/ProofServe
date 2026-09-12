@@ -6,6 +6,8 @@ import {
   ListServicesQuerySchema,
   ProviderParamsSchema,
   ServiceParamsSchema,
+  WorldVerificationContextRequestSchema,
+  WorldVerificationRequestSchema,
 } from '@proofserve/shared';
 import {
   apiError,
@@ -13,6 +15,7 @@ import {
   RegistryError,
   type RegistryOptions,
 } from './registry.js';
+import { parseJsonWithUniqueMembers } from './json.js';
 
 // Only boundary failures become 400; invalid generated/stored records become 500.
 function requestData<T>(
@@ -48,6 +51,20 @@ export function createApiApp(options: RegistryOptions = {}) {
       return reply.code(response.status).send(response.body);
     },
   });
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser(
+    'application/json',
+    { parseAs: 'string' },
+    (_request, body, done) => {
+      try {
+        if (typeof body !== 'string')
+          throw new RegistryError('VALIDATION_ERROR');
+        done(null, parseJsonWithUniqueMembers(body));
+      } catch {
+        done(new RegistryError('VALIDATION_ERROR'));
+      }
+    },
+  );
   const registry = createRegistry(options);
 
   app.setErrorHandler((error, _request, reply) => {
@@ -94,6 +111,28 @@ export function createApiApp(options: RegistryOptions = {}) {
         id: request.params.providerId,
       });
       return registry.getProvider(id);
+    },
+  );
+  app.post<{ Params: { providerId: string } }>(
+    '/api/providers/:providerId/verification/world/request',
+    { onRequest: rejectQueryParameters },
+    async (request) => {
+      const { id } = requestData(ProviderParamsSchema, {
+        id: request.params.providerId,
+      });
+      requestData(WorldVerificationContextRequestSchema, request.body);
+      return registry.createWorldVerificationRequest(id);
+    },
+  );
+  app.post<{ Params: { providerId: string } }>(
+    '/api/providers/:providerId/verification/world',
+    { onRequest: rejectQueryParameters },
+    async (request) => {
+      const { id } = requestData(ProviderParamsSchema, {
+        id: request.params.providerId,
+      });
+      const body = requestData(WorldVerificationRequestSchema, request.body);
+      return registry.verifyWorld(id, body);
     },
   );
   app.post(

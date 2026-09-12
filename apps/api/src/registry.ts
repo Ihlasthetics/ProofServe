@@ -8,6 +8,7 @@ import {
   ServiceListingSchema,
   TimestampSchema,
   VerificationRecordSchema,
+  VerifiedVerificationRecordSchema,
   type ApiErrorCode,
   type CreateProviderRequest,
   type CreateServiceRequest,
@@ -15,11 +16,16 @@ import {
   type ListServicesQuery,
   type Provider,
   type ServiceCapability,
+  type WorldVerificationRequest,
 } from '@proofserve/shared';
 import {
   InMemoryRegistryRepository,
   type RegistryRepository,
 } from './repository.js';
+import {
+  WorldVerificationFailure,
+  type WorldVerificationClient,
+} from './world.js';
 
 const errors = {
   VALIDATION_ERROR: [400, 'Invalid request.'],
@@ -31,6 +37,19 @@ const errors = {
   ],
   SERVICE_STATE_CONFLICT: [409, 'Service is already active.'],
   ENDPOINT_NOT_ALLOWED: [403, 'Service endpoint is not approved.'],
+  WORLD_PROOF_INVALID: [400, 'World verification result is invalid.'],
+  WORLD_PROOF_REPLAYED: [
+    409,
+    'World verification result has already been used.',
+  ],
+  PROVIDER_ALREADY_VERIFIED: [
+    409,
+    'Provider verification is current and renewal is not required.',
+  ],
+  WORLD_VERIFICATION_UNAVAILABLE: [
+    503,
+    'World verification is temporarily unavailable.',
+  ],
   INTERNAL_ERROR: [500, 'An internal error occurred.'],
 } as const satisfies Partial<Record<ApiErrorCode, readonly [number, string]>>;
 
@@ -55,6 +74,8 @@ export interface RegistryOptions {
   serviceId?: () => Identifier;
   /** Trusted server configuration only; called again at each eligibility check. */
   resolveEndpoint?: (capability: ServiceCapability) => string | undefined;
+  /** Server-only World adapter. Tests inject a deterministic implementation. */
+  worldVerification?: WorldVerificationClient;
 }
 
 function isCurrentlyVerified(provider: Provider, now: string): boolean {
@@ -75,6 +96,7 @@ export function createRegistry(options: RegistryOptions = {}) {
   const providerId = options.providerId ?? randomUUID;
   const serviceId = options.serviceId ?? randomUUID;
   const resolveEndpoint = options.resolveEndpoint ?? (() => undefined);
+  const worldVerification = options.worldVerification;
   const currentTime = () => TimestampSchema.parse(clock());
   const approvedEndpoint = (capability: ServiceCapability) => {
     const endpoint = EndpointUrlSchema.safeParse(resolveEndpoint(capability));
@@ -86,6 +108,27 @@ export function createRegistry(options: RegistryOptions = {}) {
     const result = ProviderSchema.parse(provider);
     if (result.id !== id) throw new RegistryError('INTERNAL_ERROR');
     return result;
+  };
+  const requireRenewal = (provider: Provider, now: string) => {
+    if (isCurrentlyVerified(provider, now))
+      throw new RegistryError('PROVIDER_ALREADY_VERIFIED');
+  };
+  const configuredWorld = () => {
+    if (!worldVerification)
+      throw new RegistryError('WORLD_VERIFICATION_UNAVAILABLE');
+    return worldVerification;
+  };
+  const verificationExpiration = (now: string, freshnessSeconds: number) => {
+    if (
+      !Number.isSafeInteger(freshnessSeconds) ||
+      freshnessSeconds < 1 ||
+      freshnessSeconds > 31_536_000
+    ) {
+      throw new RegistryError('INTERNAL_ERROR');
+    }
+    return TimestampSchema.parse(
+      new Date(Date.parse(now) + freshnessSeconds * 1_000).toISOString(),
+    );
   };
 
   return {
@@ -108,6 +151,46 @@ export function createRegistry(options: RegistryOptions = {}) {
       });
       repository.createProvider(provider);
       return provider;
+    },
+    createWorldVerificationRequest(id: Identifier) {
+      const provider = getProvider(id);
+      requireRenewal(provider, currentTime());
+      try {
+        return configuredWorld().createRequest(provider.id);
+      } catch (error) {
+        if (error instanceof WorldVerificationFailure)
+          throw new RegistryError(error.code);
+        throw error;
+      }
+    },
+    async verifyWorld(id: Identifier, result: WorldVerificationRequest) {
+      const provider = getProvider(id);
+      requireRenewal(provider, currentTime());
+      const world = configuredWorld();
+      let canonicalNullifier: string;
+      try {
+        canonicalNullifier = await world.verify(provider.id, result);
+      } catch (error) {
+        if (error instanceof WorldVerificationFailure)
+          throw new RegistryError(error.code);
+        throw error;
+      }
+      const now = currentTime();
+      const verification = VerifiedVerificationRecordSchema.parse({
+        providerId: provider.id,
+        method: 'WORLD_SELFIE_CHECK',
+        status: 'VERIFIED',
+        verifiedAt: now,
+        expiresAt: verificationExpiration(now, world.freshnessSeconds),
+      });
+      const committed = repository.commitWorldVerification(
+        provider.id,
+        canonicalNullifier,
+        verification,
+        now,
+      );
+      if (committed !== 'VERIFIED') throw new RegistryError(committed);
+      return verification;
     },
     createService(request: CreateServiceRequest) {
       const provider = getProvider(request.providerId);

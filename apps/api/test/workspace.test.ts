@@ -12,6 +12,12 @@ it('loads the api entry point without runtime configuration', async () => {
   vi.stubEnv('PORT', undefined);
   vi.stubEnv('HOST', undefined);
   vi.stubEnv('TRIAGE_SERVICE_ENDPOINT', undefined);
+  vi.stubEnv('WORLD_APP_ID', undefined);
+  vi.stubEnv('WORLD_RP_ID', undefined);
+  vi.stubEnv('WORLD_RP_SIGNING_KEY', undefined);
+  vi.stubEnv('WORLD_ACTION', undefined);
+  vi.stubEnv('WORLD_ENVIRONMENT', undefined);
+  vi.stubEnv('WORLD_VERIFICATION_FRESHNESS_SECONDS', undefined);
   const listener = vi
     .spyOn(Server.prototype, 'listen')
     .mockImplementation(() => {

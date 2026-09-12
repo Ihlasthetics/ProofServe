@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@proofserve/shared": "0.0.0",
+    "@worldcoin/idkit-core": "4.2.4",
     "fastify": "^5.12.3"
   }
 }
