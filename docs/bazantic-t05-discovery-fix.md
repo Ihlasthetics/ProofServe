@@ -48,23 +48,33 @@ still present and verified at 23:27. Other conditions above remain possible.
 ## Fix and deployment requirements
 
 Production now injects a PostgreSQL registry using the existing pg dependency
-and TLS policy. Migration 002_registry stores strict provider/service snapshots
-and canonical World replay identifiers. Verification writes and unique replay
-claims commit atomically; expiry and allowlist checks still run at discovery
-and in the buyer. Startup requires the migration, exact validated and enforced
+and TLS policy. Migration 002_registry stores strict provider/service snapshots,
+permanent provider ownership of canonical World nullifiers, and server-issued
+signed RP contexts with provider binding, signed expiration, and one-time
+consumption state. Each context captures its server issuance time and the provider
+verification epoch under a provider lock. After expiry, the same provider can renew with its stable
+nullifier only through a successfully verified, unexpired context issued for that
+provider after that expiry. Pre-verification spare contexts and contexts issued
+during a verification race become stale when the epoch changes. Unissued,
+mismatched, stale-epoch, expired, consumed, and cross-provider claims remain
+rejected across restarts. Context consumption, nullifier ownership, and verification
+writes commit atomically; expiry and allowlist checks still run at discovery and in the buyer.
+Startup requires the migration, exact validated and enforced
 constraints, and the documented read/write privileges before listening or
 reconciliation. Idle registry-pool errors are handled without logging raw database
 diagnostics; the driver replaces the failed idle client or later work fails closed.
-No automatic migration, seed, verification renewal, activation, or run retry exists.
+No automatic migration, seed, renewal request, activation, or run retry exists.
 
 After human diff review and separate operational authorization:
 
-1. Follow the existing deployment database safety gate before any API wake/restart.
-2. Apply `apps/api/migrations/002_registry.sql` after migration 001 using the
-   approved migration operator and documented `psql --single-transaction` command.
-   The migration is repeatable, but back up existing data first.
-3. Grant the runtime role the documented registry table permissions and reserve
-   capacity for both API connection pools, then confirm startup readiness passes.
+1. Run the migration-001-compatible pre-upgrade gate. It inspects only connection
+   capacity and existing run/payment tables and requires zero nonterminal runs.
+2. Back up the database, then apply `apps/api/migrations/002_registry.sql` after
+   migration 001 using the approved operator and documented caller-controlled
+   `psql --single-transaction` command.
+3. Grant the runtime role the documented registry permissions, reserve capacity
+   for both API pools, and complete the post-migration structural, privilege,
+   run/payment, and application-readiness gate before starting or routing traffic.
 4. Build the API with `npm run build:api` and deploy it under separate approval.
 5. Old in-memory records are not imported. If lost, perform fresh onboarding,
    real World verification, and explicit service activation. Old run receipts
@@ -80,10 +90,16 @@ migration cannot be recovered by this patch.
 
 ## Local validation
 
-- API focused suite: 320 tests passed; the 9 opt-in PostgreSQL tests were skipped
+- API focused suite: 322 tests passed; the 11 opt-in PostgreSQL tests were skipped
   in this ordinary run.
-- PostgreSQL integration: all 9 tests passed against a disposable loopback-only
-  PostgreSQL 17.11 cluster. The test applied migration 002 twice and covered an
+- PostgreSQL integration: all 11 tests passed against a disposable loopback-only
+  PostgreSQL 16.15 cluster, matching the production major version. The test applied
+  migration 002 twice and covered issued-context persistence, unissued, mismatched,
+  expired, consumed and concurrently submitted contexts, restart between issuance
+  and verification, verification-epoch binding with 60-second verification
+  freshness inside the 300-second context lifetime, racing and spare-context
+  rejection, secure same-nullifier renewal, exact old-request replay,
+  cross-provider nullifier rejection, an
   incomplete table, forged and unvalidated CHECK constraints, a mis-mapped foreign
   key, disabled enforcement triggers, restart persistence, concurrent replay,
   database-level rollback, verification expiry, snapshot constraints, and
@@ -93,8 +109,8 @@ migration cannot be recovered by this patch.
 - Final lint, typecheck, build, diff, and full validation results are recorded in
   the human review report produced with this change.
 
-No live database query/mutation, deployment, service restart, payment request,
-Recipe execution, commit, push, or PR was performed. Local database mutations
-were confined to the authorized disposable PostgreSQL integration cluster. An
+No live database query/mutation, deployment, service restart, payment request, or
+Recipe execution was performed. Local database mutations were confined to the
+authorized disposable PostgreSQL integration cluster. An
 initial GET discovery attempt was blocked by the local network sandbox; it was
 not retried after the deployment wake/reconciliation hazard was identified.

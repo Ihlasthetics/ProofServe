@@ -7,6 +7,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import {
   canonicalizeWorldFieldElement,
+  canonicalizeWorldRequestNonce,
   createWorldVerificationClient,
   readWorldConfiguration,
   WorldConfigurationError,
@@ -187,6 +188,17 @@ describe('World verification transport and response validation', () => {
     expect(() =>
       canonicalizeWorldFieldElement((1n << 256n).toString(10)),
     ).toThrow(WorldVerificationFailure);
+  });
+
+  it('canonicalizes only an exact 32-byte World request nonce', () => {
+    expect(canonicalizeWorldRequestNonce(`0x${'AB'.repeat(32)}`)).toBe(
+      `0x${'ab'.repeat(32)}`,
+    );
+    for (const value of ['ab'.repeat(32), `0X${'ab'.repeat(32)}`, '0x01']) {
+      expect(() => canonicalizeWorldRequestNonce(value)).toThrow(
+        WorldVerificationFailure,
+      );
+    }
   });
 
   it('forwards the complete validated IDKit result unchanged to the fixed RP URL', async () => {

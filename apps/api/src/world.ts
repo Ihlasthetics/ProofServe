@@ -25,6 +25,7 @@ const signingKeyPattern = /^(?:0x)?[0-9a-fA-F]{64}$/;
 const canonicalPositiveIntegerPattern = /^[1-9][0-9]*$/;
 const hexadecimalFieldElementPattern = /^0[xX][0-9a-fA-F]{1,64}$/;
 const decimalFieldElementPattern = /^[0-9]{1,78}$/;
+const requestNoncePattern = /^0x[0-9a-fA-F]{64}$/;
 const maximumFieldElement = (1n << 256n) - 1n;
 const dateTimePattern =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -148,6 +149,12 @@ export function canonicalizeWorldFieldElement(value: string): string {
   if (parsed > maximumFieldElement)
     throw new WorldVerificationFailure('WORLD_PROOF_INVALID');
   return parsed.toString(10);
+}
+
+export function canonicalizeWorldRequestNonce(value: string): string {
+  if (!requestNoncePattern.test(value))
+    throw new WorldVerificationFailure('WORLD_PROOF_INVALID');
+  return value.toLowerCase();
 }
 
 function hasOnlyKeys(

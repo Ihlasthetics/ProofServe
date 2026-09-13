@@ -9,6 +9,7 @@ import {
   TimestampSchema,
   VerificationRecordSchema,
   VerifiedVerificationRecordSchema,
+  WorldVerificationContextResponseSchema,
   type ApiErrorCode,
   type CreateProviderRequest,
   type CreateServiceRequest,
@@ -23,6 +24,7 @@ import {
   type RegistryRepository,
 } from './repository.js';
 import {
+  canonicalizeWorldRequestNonce,
   WorldVerificationFailure,
   type WorldVerificationClient,
 } from './world.js';
@@ -156,18 +158,53 @@ export function createRegistry(options: RegistryOptions = {}) {
     },
     async createWorldVerificationRequest(id: Identifier) {
       const provider = await getProvider(id);
-      requireRenewal(provider, currentTime());
+      const now = currentTime();
+      requireRenewal(provider, now);
       try {
-        return configuredWorld().createRequest(provider.id);
+        const request = WorldVerificationContextResponseSchema.parse(
+          configuredWorld().createRequest(provider.id),
+        );
+        const canonicalRequestNonce = canonicalizeWorldRequestNonce(
+          request.rp_context.nonce,
+        );
+        const expiresAt = TimestampSchema.parse(
+          new Date(request.rp_context.expires_at * 1_000).toISOString(),
+        );
+        if (expiresAt <= now)
+          throw new WorldVerificationFailure('WORLD_VERIFICATION_UNAVAILABLE');
+        const issued = await repository.createWorldVerificationContext({
+          canonicalRequestNonce,
+          providerId: provider.id,
+          issuedAt: now,
+          expiresAt,
+        });
+        if (issued !== 'ISSUED') throw new RegistryError(issued);
+        return request;
+      } catch (error) {
+        if (error instanceof RegistryError) throw error;
+        if (error instanceof WorldVerificationFailure)
+          throw new RegistryError(error.code);
+        throw new RegistryError('INTERNAL_ERROR');
+      }
+    },
+    async verifyWorld(id: Identifier, result: WorldVerificationRequest) {
+      const provider = await getProvider(id);
+      const requestCheckTime = currentTime();
+      let canonicalRequestNonce: string;
+      try {
+        canonicalRequestNonce = canonicalizeWorldRequestNonce(result.nonce);
       } catch (error) {
         if (error instanceof WorldVerificationFailure)
           throw new RegistryError(error.code);
         throw error;
       }
-    },
-    async verifyWorld(id: Identifier, result: WorldVerificationRequest) {
-      const provider = await getProvider(id);
-      requireRenewal(provider, currentTime());
+      const contextStatus = await repository.worldVerificationContextStatus(
+        provider.id,
+        canonicalRequestNonce,
+        requestCheckTime,
+      );
+      if (contextStatus !== 'ISSUED') throw new RegistryError(contextStatus);
+      requireRenewal(provider, requestCheckTime);
       const world = configuredWorld();
       let canonicalNullifier: string;
       try {
@@ -187,7 +224,7 @@ export function createRegistry(options: RegistryOptions = {}) {
       });
       const committed = await repository.commitWorldVerification(
         provider.id,
-        canonicalNullifier,
+        { canonicalNullifier, canonicalRequestNonce },
         verification,
         now,
       );

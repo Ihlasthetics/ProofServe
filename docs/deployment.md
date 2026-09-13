@@ -224,78 +224,57 @@ Never put the run token, signing keys, or Gemini credential in `NEXT_PUBLIC_*`,
 Next config, browser props or shared environment groups. Do not log proof/request
 bodies, authorization headers, database connection strings or private keys.
 
-## Database initialization and readiness
+## Database upgrade and readiness
 
-Schema creation is **not automatic**. Before starting the updated API, have the
-approved database operator apply both migrations in order to the same database
-and schema used by the runtime role. Both files are repeatable and rely on the
-caller's transaction. With libpq connection settings provided securely outside
-shell history, use:
-
-```sh
-psql -X --set=ON_ERROR_STOP=1 --single-transaction --file=apps/api/migrations/001_agent_runs.sql
-psql -X --set=ON_ERROR_STOP=1 --single-transaction --file=apps/api/migrations/002_registry.sql
-```
+Schema creation is **not automatic**. This upgrade has two separate safety gates.
+Run the pre-upgrade gate against the migration-001 database before backup or
+migration. Apply migration 002 only after that gate passes and the backup completes.
+Then run the post-migration gate before starting the updated API or routing traffic.
 
 Supply `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSFILE`, `PGSSLMODE` and,
-if required by the operator's trust setup, `PGSSLROOTCERT` securely to psql.
-Use full certificate verification. Never put a password/connection URI in the
-command or paste migration diagnostics containing credentials into this task.
-These are operator-side psql settings, not additional API environment variables.
+when required, `PGSSLROOTCERT` securely to psql. Use full certificate verification.
+Never put a password or connection URI in a command or paste database diagnostics
+containing credentials into the deployment record. These are operator-side libpq
+settings, not additional API environment variables.
 
-Use a currently supported PostgreSQL release. The schema requires JSONB,
-transactions, foreign keys, partial indexes and ordinary catalog access; no
-extension is required. No minimum server version is declared or integration-tested
-by this repository. The migration role needs schema/table/index creation rights.
-The API role needs schema usage; SELECT/INSERT/UPDATE on `agent_runs`,
-`agent_run_payment_tombstones`, `registry_providers`, and `registry_services`;
-SELECT/INSERT on `registry_world_replays`; and SELECT on
-`proofserve_schema_migrations`. Both roles must resolve the same schema/search
-path. The API uses separate pools with maxima of ten agent-run connections and
-five registry connections. Reserve at least fifteen API connections plus operator
-and platform administration capacity before deployment.
+PostgreSQL 16 is the production major version and the complete integration suite
+is tested against PostgreSQL 16.15. The schema requires JSONB, transactions,
+foreign keys, partial indexes and ordinary catalog access; no extension is required.
+The migration role needs schema/table/index creation rights. The API role needs:
 
+- schema usage;
+- SELECT/INSERT/UPDATE on `agent_runs`, `agent_run_payment_tombstones`,
+  `registry_providers`, and `registry_services`;
+- SELECT/INSERT on `registry_world_nullifiers`, SELECT/INSERT/UPDATE on
+  `registry_world_replays`; and
+- SELECT on `proofserve_schema_migrations`.
+
+Both roles must resolve the same schema/search path. The API uses separate pools
+with maxima of ten agent-run connections and five registry connections. Reserve at
+least fifteen API connections plus operator and platform administration capacity.
 For non-loopback hosts, source enforces verified TLS and accepts only absent
-`sslmode` or `verify-full`; do not use `require`, disable verification, or add
-certificate override URL parameters. Provider TLS incompatibility is a blocker
-to report to Yhlas, not permission to weaken database security.
+`sslmode` or `verify-full`; never weaken certificate verification.
 
-Startup awaits both repository readiness checks before listening or reconciling.
-They require migration markers 001 and 002, exact required column sets and types,
-primary keys, exact validated and enforced registry CHECK definitions, the exact
-service-provider foreign-key mapping and actions, enabled foreign-key enforcement
-triggers, and the reconciliation index. Registry readiness also uses PostgreSQL's
-read-only privilege inspection functions to require schema usage and the documented
-runtime table privileges; it does not mutate data to probe permissions. An absent,
-partial, incompatible, or insufficiently privileged schema fails startup closed.
-Database connection timeout is ten seconds; there is no startup retry loop or
-automatic migration. Provision/migrate first, then start or retry the API after
-availability is restored.
+### Pre-upgrade gate: migration-001 database
 
-The registry pool installs an idle-client error listener immediately on creation.
-The driver removes the failed idle client; the listener emits no database diagnostic,
-and the next operation either obtains a replacement connection or returns the API's
-fixed internal error. The health endpoint is process liveness, not a continuous
-database/dependency probe and not a side-effect-free startup probe.
-
-### Required pre-start database safety gate
-
-Run the following exact read-only inspection through a secured operator `psql`
-session against the same database and schema as the API. The first result counts
-the durable run, payment, and registry tables created by the migrations. The second
-uses the same
-durable nonterminal predicate and ordering as `listReconciliationRunIds()` while
-showing only safe operational metadata:
+Stop new run submissions and allow all active runs to finish. Run this exact
+read-only inspection through a secured operator psql session in the migration-001
+database and schema. It references only the existing run/payment tables and the
+PostgreSQL connection catalog; it does not query migration-002 registry tables.
 
 ```sql
+\set ON_ERROR_STOP on
 BEGIN TRANSACTION READ ONLY;
 
 SELECT
+  current_setting('max_connections')::integer AS max_connections,
+  count(*)::integer AS current_database_connections
+FROM pg_stat_activity
+WHERE datname = current_database();
+
+SELECT
   (SELECT count(*) FROM agent_runs) AS agent_run_count,
-  (SELECT count(*) FROM agent_run_payment_tombstones) AS payment_tombstone_count,
-  (SELECT count(*) FROM registry_providers) AS provider_count,
-  (SELECT count(*) FROM registry_services) AS service_count,
-  (SELECT count(*) FROM registry_world_replays) AS world_replay_count;
+  (SELECT count(*) FROM agent_run_payment_tombstones) AS payment_tombstone_count;
 
 SELECT
   r.id AS run_id,
@@ -311,38 +290,137 @@ ORDER BY r.created_at, r.id;
 COMMIT;
 ```
 
-For any initial deployment to a newly migrated database, require
-`agent_run_count = 0`, `payment_tombstone_count = 0` and zero rows from the second
-result. Perform this check before configuring the funded payer credentials and
-before starting the API. A previously used or nonempty database does not satisfy
-the initial-deployment gate, even if all of its runs are terminal.
+The result must have zero nonterminal rows. Confirm that the configured database
+limit can reserve fifteen API connections in addition to observed, operator, and
+platform administration connections. If a table is absent, a query fails, capacity
+is insufficient, or any nonterminal row exists, stop before backup and migration.
+Do not start the API to inspect or recover a run, and never delete or reset run,
+payment tombstone, transaction, or receipt data.
 
-For every later manual deploy or restart, stop new run submissions, allow active
-runs to finish, then run the inspection before starting the replacement API. Funded
-startup is permitted only when the second result has zero rows or when a human
-payment owner explicitly authorizes startup recovery of the run IDs and states
-listed by that result. Run the inspection directly in the secured database session;
-never print task bodies, receipts, credentials, authorization tokens, proof
-material, private keys or raw transaction/payment fields in this query, its
-diagnostics or the deployment record.
+### Backup and migration 002
 
-If the second result contains any rows, do not start the API merely to perform a
-health check. Do not delete or reset runs, permanent payment tombstones,
-transaction IDs or receipts, and do not retry a payment manually. Startup may
-resume side effects, so explicit payment-owner approval for the listed runs is
-required before recovery.
+After the pre-upgrade gate passes, complete and verify the approved database backup.
+Then the approved migration operator applies migration 002 to the same database and
+schema. The file is repeatable, validates the complete schema, and relies on the
+caller's transaction:
+
+```sh
+psql -X --set=ON_ERROR_STOP=1 --single-transaction --file=apps/api/migrations/002_registry.sql
+```
+
+For a new empty database, apply migration 001 with the same command shape before
+migration 002. Do not run the post-migration queries until migration 002 commits.
+
+### Post-migration gate: before updated API startup
+
+First rerun the same migration-002 command as the migration operator. Its repeatable
+validation block proves the exact tables, columns, primary keys, validated CHECK
+definitions, foreign-key source/target columns and actions, and enabled enforcement
+triggers. Any incompatible or partial schema aborts the caller-controlled transaction.
+
+Next connect as the exact API runtime role with its production search path and run:
+
+```sql
+\set ON_ERROR_STOP on
+BEGIN TRANSACTION READ ONLY;
+
+SELECT
+  EXISTS (
+    SELECT 1 FROM proofserve_schema_migrations WHERE version = '002_registry'
+  ) AS migration_002_present,
+  to_regclass('registry_providers') IS NOT NULL AS providers_present,
+  to_regclass('registry_services') IS NOT NULL AS services_present,
+  to_regclass('registry_world_nullifiers') IS NOT NULL AS nullifiers_present,
+  to_regclass('registry_world_replays') IS NOT NULL AS replays_present;
+
+SELECT
+  has_schema_privilege(current_user, current_schema(), 'USAGE') AS schema_usage,
+  has_table_privilege(current_user, 'proofserve_schema_migrations', 'SELECT') AS migrations_select,
+  has_table_privilege(current_user, 'registry_providers', 'SELECT') AS providers_select,
+  has_table_privilege(current_user, 'registry_providers', 'INSERT') AS providers_insert,
+  has_table_privilege(current_user, 'registry_providers', 'UPDATE') AS providers_update,
+  has_table_privilege(current_user, 'registry_services', 'SELECT') AS services_select,
+  has_table_privilege(current_user, 'registry_services', 'INSERT') AS services_insert,
+  has_table_privilege(current_user, 'registry_services', 'UPDATE') AS services_update,
+  has_table_privilege(current_user, 'registry_world_nullifiers', 'SELECT') AS nullifiers_select,
+  has_table_privilege(current_user, 'registry_world_nullifiers', 'INSERT') AS nullifiers_insert,
+  has_table_privilege(current_user, 'registry_world_replays', 'SELECT') AS replays_select,
+  has_table_privilege(current_user, 'registry_world_replays', 'INSERT') AS replays_insert,
+  has_table_privilege(current_user, 'registry_world_replays', 'UPDATE') AS replays_update;
+
+SELECT
+  (SELECT count(*) FROM agent_runs) AS agent_run_count,
+  (SELECT count(*) FROM agent_run_payment_tombstones) AS payment_tombstone_count,
+  (SELECT count(*) FROM registry_providers) AS provider_count,
+  (SELECT count(*) FROM registry_services) AS service_count,
+  (SELECT count(*) FROM registry_world_nullifiers) AS world_nullifier_count,
+  (SELECT count(*) FROM registry_world_replays) AS world_context_count;
+
+SELECT
+  r.id AS run_id,
+  r.snapshot->>'status' AS status,
+  (t.run_id IS NOT NULL) AS has_payment_tombstone,
+  (t.payment_identifier IS NOT NULL) AS has_payment_identifier,
+  (t.submission_authorized_at IS NOT NULL) AS submission_authorized
+FROM agent_runs AS r
+LEFT JOIN agent_run_payment_tombstones AS t ON t.run_id = r.id
+WHERE r.snapshot->>'status' NOT IN ('COMPLETED', 'FAILED')
+ORDER BY r.created_at, r.id;
+
+COMMIT;
+```
+
+Every presence and privilege value must be true, connection capacity must remain
+sufficient, and the nonterminal query must again return zero rows. For an initial
+deployment to a new database, the run/payment counts must also be zero. A query or
+permission failure stops the gate; do not start the updated API.
+
+After building the API, run both application readiness checks without opening a
+listener. `DATABASE_URL` must already be supplied securely in the environment:
+
+```sh
+node --input-type=module <<'NODE'
+import {
+  createPostgresAgentRunRepository,
+  createPostgresRegistryRepository,
+} from './apps/api/dist/index.js';
+
+if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required');
+const runs = createPostgresAgentRunRepository(process.env.DATABASE_URL);
+const registry = createPostgresRegistryRepository(process.env.DATABASE_URL);
+try {
+  await runs.assertReady();
+  await registry.assertReady();
+  console.log('database readiness: ok');
+} finally {
+  await Promise.allSettled([runs.close(), registry.close()]);
+}
+NODE
+```
+
+Startup performs these checks again before listening or reconciliation. They fail
+closed for database errors, absent markers, incomplete or incompatible schemas,
+disabled constraints, or insufficient privileges. The connection timeout is ten
+seconds; there is no startup retry loop or automatic migration. The registry pool
+also installs an idle-client error listener immediately, emits no raw database
+diagnostic, and relies on the driver to replace the failed idle client. The health
+endpoint reports process liveness and is not a database readiness probe.
 
 ## State and redeployment constraints
 
-The updated API stores providers, services, verification metadata, World replay
-identifiers, agent runs, and payment safety records in PostgreSQL. Restarting the
+The updated API stores providers, services, verification metadata, World nullifier
+ownership, and signed RP context nonce, provider, expiration, and one-time
+consumption metadata. Context rows also retain server issuance time and the
+provider verification epoch captured under a provider lock, along with agent runs and payment safety
+records in PostgreSQL. Restarting the
 updated API does not erase these records. Discovery still rechecks verification
 expiry and the configured endpoint at request time. Run exactly one long-lived
 API instance for this deployment; payment reconciliation remains operated under
 the existing single-instance safety policy.
 
-Schedule API deploys during a maintenance window and follow the pre-start gate
-above. Ensure the old process stops before routing traffic to the new one and
+Schedule this database upgrade during a maintenance window and follow both ordered
+gates above. For later deploys after migration 002, repeat the post-migration gate.
+Ensure the old process stops before routing traffic to the new one and
 confirm the provider's stop/start procedure before deployment. Migration 002
 cannot recover provider, service, verification, or replay records already lost
 from the old in-memory registry. After the first migration/deployment, recreate
@@ -362,10 +440,11 @@ is implemented and accepted.
 
 For every later manual deployment, restart, cold start, or wake:
 
-1. Stop new run submissions, allow active runs to finish, and execute the exact
-   read-only database safety gate above.
-2. Start or wake the API only when the nonterminal result has zero rows, or when
-   a human payment owner explicitly authorizes recovery of every listed run.
+1. Stop new run submissions, allow active runs to finish, and execute the
+   post-migration read-only and application readiness gates above.
+2. Start or wake the API only when the nonterminal result has zero rows. Recovery
+   of any listed run requires a separate payment-owner procedure outside this
+   deployment gate.
 3. Keep exactly one API instance, automatic API deployment disabled, and the API
    free of generic uptime pings or other automatic keep-awake traffic.
 4. After the first migration/deployment, recreate only records that were already

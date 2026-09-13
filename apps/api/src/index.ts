@@ -32,12 +32,23 @@ export { createRegistry, type RegistryOptions } from './registry.js';
 export {
   InMemoryWorldReplayStore,
   InMemoryRegistryRepository,
+  type IssuedWorldVerificationContext,
   type RegistryRepository,
   type WorldReplayStore,
+  type WorldVerificationContextIssue,
+  type WorldVerificationContextIssueResult,
+  type WorldVerificationContextStatus,
+  type WorldVerificationEpoch,
+  type WorldVerificationReplayClaim,
   type WorldVerificationCommitResult,
 } from './repository.js';
 export {
+  createPostgresRegistryRepository,
+  PostgresRegistryRepository,
+} from './postgres-registry-repository.js';
+export {
   canonicalizeWorldFieldElement,
+  canonicalizeWorldRequestNonce,
   createWorldVerificationClient,
   readWorldConfiguration,
   WorldConfigurationError,

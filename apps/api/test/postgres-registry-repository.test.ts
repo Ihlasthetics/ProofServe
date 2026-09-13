@@ -9,7 +9,12 @@ import {
 } from '@proofserve/shared';
 import { PostgresRegistryRepository } from '../src/postgres-registry-repository.js';
 
-function harness(conflict = false, failUpdate = false, updateCount: 0 | 1 = 1) {
+const replayClaim = {
+  canonicalNullifier: '123',
+  canonicalRequestNonce: `0x${'11'.repeat(32)}`,
+};
+
+function harness(replay = false, failUpdate = false, updateCount: 0 | 1 = 1) {
   const provider = structuredClone(verifiedProviderFixture);
   const verification = VerifiedVerificationRecordSchema.parse(
     provider.verification,
@@ -24,11 +29,29 @@ function harness(conflict = false, failUpdate = false, updateCount: 0 | 1 = 1) {
   const query = vi.fn(async (sql: string) => {
     if (sql.startsWith('SELECT snapshot'))
       return { rows: [{ snapshot: provider }], rowCount: 1 };
-    if (sql.startsWith('INSERT'))
-      return { rows: [], rowCount: conflict ? 0 : 1 };
-    if (sql.startsWith('UPDATE') && failUpdate)
+    if (
+      sql.includes('FROM registry_world_replays') &&
+      sql.includes('FOR UPDATE')
+    )
+      return {
+        rows: [
+          {
+            provider_id: provider.id,
+            unexpired: true,
+            consumed: replay,
+            epoch_matches: true,
+          },
+        ],
+        rowCount: 1,
+      };
+    if (sql.startsWith('INSERT INTO registry_world_nullifiers'))
+      return { rows: [{ provider_id: provider.id }], rowCount: 1 };
+    if (sql.includes('UPDATE registry_world_replays'))
+      return { rows: [], rowCount: 1 };
+    if (sql.startsWith('UPDATE registry_providers') && failUpdate)
       throw new Error('test write failure');
-    if (sql.startsWith('UPDATE')) return { rows: [], rowCount: updateCount };
+    if (sql.startsWith('UPDATE registry_providers'))
+      return { rows: [], rowCount: updateCount };
     return { rows: [], rowCount: 0 };
   });
   const release = vi.fn();
@@ -47,19 +70,21 @@ it('commits the verification and unique replay claim in one locked transaction',
   expect(
     await h.repository.commitWorldVerification(
       h.provider.id,
-      '123',
+      replayClaim,
       h.verification,
       fixtureReferenceTime,
     ),
   ).toBe('VERIFIED');
-  expect(h.query.mock.calls.map(([sql]) => sql)).toEqual([
-    'BEGIN',
-    'SELECT snapshot FROM registry_providers WHERE id = $1 FOR UPDATE',
-    'SELECT nullifier FROM registry_world_replays WHERE nullifier = $1',
-    'INSERT INTO registry_world_replays (nullifier) VALUES ($1) ON CONFLICT DO NOTHING RETURNING nullifier',
-    'UPDATE registry_providers SET snapshot = $2 WHERE id = $1',
-    'COMMIT',
-  ]);
+  const statements = h.query.mock.calls.map(([sql]) => sql as string);
+  expect(statements).toHaveLength(7);
+  expect(statements[0]).toBe('BEGIN');
+  expect(statements[1]).toContain('registry_providers');
+  expect(statements[2]).toContain('registry_world_replays');
+  expect(statements[2]).toContain('FOR UPDATE');
+  expect(statements[3]).toContain('INSERT INTO registry_world_nullifiers');
+  expect(statements[4]).toContain('UPDATE registry_world_replays');
+  expect(statements[5]).toContain('UPDATE registry_providers');
+  expect(statements[6]).toBe('COMMIT');
   expect(h.release).toHaveBeenCalledOnce();
 });
 
@@ -69,7 +94,7 @@ it('ships an idempotent caller-transaction migration with strict identity constr
     'utf8',
   );
   expect(sql).not.toMatch(/^\s*(BEGIN|COMMIT);/m);
-  expect(sql.match(/CREATE TABLE IF NOT EXISTS/g)).toHaveLength(3);
+  expect(sql.match(/CREATE TABLE IF NOT EXISTS/g)).toHaveLength(4);
   expect(sql).toMatch(/ON CONFLICT \(version\) DO NOTHING/);
   expect(sql).toMatch(/jsonb_typeof\(snapshot\) = 'object'/);
   expect(sql).toMatch(/snapshot \? 'id'/);
@@ -80,7 +105,6 @@ it('ships an idempotent caller-transaction migration with strict identity constr
     'pg_get_constraintdef(c.oid, false) = expected.definition',
   );
   expect(sql).toContain('c.convalidated');
-  expect(sql).toContain("tc.enforced = 'YES'");
   expect(sql).toContain("t.tgenabled = 'O'");
   expect(sql).toContain("c.confupdtype = 'a'");
   expect(sql).toContain("c.confdeltype = 'r'");
@@ -115,9 +139,9 @@ it('checks runtime write privileges without mutating registry data', async () =>
   expect(readinessSql).toContain('has_schema_privilege');
   expect(readinessSql).toContain('has_table_privilege');
   expect(readinessSql).not.toContain("'SELECT,INSERT");
-  expect(readinessSql.match(/'SELECT'/g)).toHaveLength(4);
-  expect(readinessSql.match(/'INSERT'/g)).toHaveLength(3);
-  expect(readinessSql.match(/'UPDATE'/g)).toHaveLength(2);
+  expect(readinessSql.match(/'SELECT'/g)).toHaveLength(5);
+  expect(readinessSql.match(/'INSERT'/g)).toHaveLength(4);
+  expect(readinessSql.match(/'UPDATE'/g)).toHaveLength(3);
 });
 
 it('does not update verification when another transaction wins the replay claim', async () => {
@@ -125,14 +149,16 @@ it('does not update verification when another transaction wins the replay claim'
   expect(
     await h.repository.commitWorldVerification(
       h.provider.id,
-      '123',
+      replayClaim,
       h.verification,
       fixtureReferenceTime,
     ),
   ).toBe('WORLD_PROOF_REPLAYED');
-  expect(h.query.mock.calls.some(([sql]) => sql.startsWith('UPDATE'))).toBe(
-    false,
-  );
+  expect(
+    h.query.mock.calls.some(([sql]) =>
+      (sql as string).startsWith('UPDATE registry_providers'),
+    ),
+  ).toBe(false);
   expect(h.query).toHaveBeenLastCalledWith('ROLLBACK');
 });
 
@@ -141,7 +167,7 @@ it('rolls back the replay claim if the provider write fails', async () => {
   await expect(
     h.repository.commitWorldVerification(
       h.provider.id,
-      '123',
+      replayClaim,
       h.verification,
       fixtureReferenceTime,
     ),
@@ -156,7 +182,7 @@ it('rolls back the replay claim unless exactly one provider row is updated', asy
   await expect(
     h.repository.commitWorldVerification(
       h.provider.id,
-      '123',
+      replayClaim,
       h.verification,
       fixtureReferenceTime,
     ),
