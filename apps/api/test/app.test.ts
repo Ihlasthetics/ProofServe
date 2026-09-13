@@ -297,6 +297,50 @@ const verificationCases = [
   },
 ];
 describe('activation', () => {
+  it('returns SERVICE_STATE_CONFLICT when concurrent activation loses its update race', async () => {
+    class RacingRepository extends InMemoryRegistryRepository {
+      private updates = 0;
+      private releaseUpdates: (() => void) | undefined;
+      private readonly bothUpdatesStarted = new Promise<void>((resolve) => {
+        this.releaseUpdates = resolve;
+      });
+
+      override async updateService(service: ServiceListing): Promise<boolean> {
+        this.updates += 1;
+        if (this.updates === 2) this.releaseUpdates?.();
+        await this.bothUpdatesStarted;
+        if (super.getService(service.id)?.status !== 'DRAFT') return false;
+        return super.updateService(service);
+      }
+    }
+
+    const repository = new RacingRepository();
+    const { app } = setup({ repository });
+    seed(repository);
+    const responses = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: `/api/services/${activeServiceFixture.id}/activate`,
+        payload: {},
+      }),
+      app.inject({
+        method: 'POST',
+        url: `/api/services/${activeServiceFixture.id}/activate`,
+        payload: {},
+      }),
+    ]);
+    expect(responses.map(({ statusCode }) => statusCode).sort()).toEqual([
+      200, 409,
+    ]);
+    const conflict = responses.find(({ statusCode }) => statusCode === 409);
+    expect(ApiErrorResponseSchema.parse(conflict?.json()).error.code).toBe(
+      'SERVICE_STATE_CONFLICT',
+    );
+    expect(repository.getService(activeServiceFixture.id)?.status).toBe(
+      'ACTIVE',
+    );
+  });
+
   it('activates a draft at verifiedAt and updates only status and updatedAt', async () => {
     const now = '2026-09-06T10:00:01.000Z';
     const { app, repository } = setup({ now: () => now });
@@ -515,9 +559,9 @@ describe('activation', () => {
         403,
         'ENDPOINT_NOT_ALLOWED',
       );
-      expect(repository.getService(activeServiceFixture.id)?.status).toBe(
-        'DRAFT',
-      );
+      expect(
+        (await repository.getService(activeServiceFixture.id))?.status,
+      ).toBe('DRAFT');
     },
   );
 });

@@ -47,20 +47,24 @@ export class InMemoryWorldReplayStore implements WorldReplayStore {
 // Default repositories share replay claims for the lifetime of this Node process.
 const processWorldReplayStore = new InMemoryWorldReplayStore();
 
-/** Synchronous storage for Y02; provider and service records remain per instance. */
+/** Registry storage; production is durable, while tests may use synchronous memory. */
 export interface RegistryRepository {
-  createProvider(provider: Provider): void;
-  getProvider(id: Identifier): Provider | undefined;
-  createService(service: ServiceListing): void;
-  getService(id: Identifier): ServiceListing | undefined;
+  createProvider(provider: Provider): void | Promise<void>;
+  getProvider(
+    id: Identifier,
+  ): Provider | undefined | Promise<Provider | undefined>;
+  createService(service: ServiceListing): void | Promise<void>;
+  getService(
+    id: Identifier,
+  ): ServiceListing | undefined | Promise<ServiceListing | undefined>;
   commitWorldVerification(
     providerId: Identifier,
     canonicalNullifier: string,
     verification: VerifiedVerificationRecord,
     now: string,
-  ): WorldVerificationCommitResult;
-  updateService(service: ServiceListing): void;
-  listServices(): ServiceListing[];
+  ): WorldVerificationCommitResult | Promise<WorldVerificationCommitResult>;
+  updateService(service: ServiceListing): boolean | Promise<boolean>;
+  listServices(): ServiceListing[] | Promise<ServiceListing[]>;
 }
 
 export class InMemoryRegistryRepository implements RegistryRepository {
@@ -135,9 +139,13 @@ export class InMemoryRegistryRepository implements RegistryRepository {
     return structuredClone(this.services.get(id));
   }
 
-  updateService(service: ServiceListing): void {
-    if (!this.services.has(service.id)) throw new Error('Missing service');
+  updateService(service: ServiceListing): boolean | Promise<boolean> {
+    const current = this.services.get(service.id);
+    if (!current) throw new Error('Missing service');
+    if (current.status !== 'DRAFT' || current.providerId !== service.providerId)
+      return false;
     this.services.set(service.id, structuredClone(service));
+    return true;
   }
 
   listServices(): ServiceListing[] {

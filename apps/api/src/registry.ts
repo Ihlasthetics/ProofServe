@@ -104,8 +104,8 @@ export function createRegistry(options: RegistryOptions = {}) {
     const endpoint = EndpointUrlSchema.safeParse(resolveEndpoint(capability));
     return endpoint.success ? endpoint.data : undefined;
   };
-  const getProvider = (id: Identifier) => {
-    const provider = repository.getProvider(id);
+  const getProvider = async (id: Identifier) => {
+    const provider = await repository.getProvider(id);
     if (!provider) throw new RegistryError('PROVIDER_NOT_FOUND');
     const result = ProviderSchema.parse(provider);
     if (result.id !== id) throw new RegistryError('INTERNAL_ERROR');
@@ -135,7 +135,7 @@ export function createRegistry(options: RegistryOptions = {}) {
 
   return {
     getProvider,
-    createProvider(request: CreateProviderRequest) {
+    async createProvider(request: CreateProviderRequest) {
       const id = providerId();
       const now = currentTime();
       const provider = ProviderSchema.parse({
@@ -151,11 +151,11 @@ export function createRegistry(options: RegistryOptions = {}) {
           expiresAt: null,
         },
       });
-      repository.createProvider(provider);
+      await repository.createProvider(provider);
       return provider;
     },
-    createWorldVerificationRequest(id: Identifier) {
-      const provider = getProvider(id);
+    async createWorldVerificationRequest(id: Identifier) {
+      const provider = await getProvider(id);
       requireRenewal(provider, currentTime());
       try {
         return configuredWorld().createRequest(provider.id);
@@ -166,7 +166,7 @@ export function createRegistry(options: RegistryOptions = {}) {
       }
     },
     async verifyWorld(id: Identifier, result: WorldVerificationRequest) {
-      const provider = getProvider(id);
+      const provider = await getProvider(id);
       requireRenewal(provider, currentTime());
       const world = configuredWorld();
       let canonicalNullifier: string;
@@ -185,7 +185,7 @@ export function createRegistry(options: RegistryOptions = {}) {
         verifiedAt: now,
         expiresAt: verificationExpiration(now, world.freshnessSeconds),
       });
-      const committed = repository.commitWorldVerification(
+      const committed = await repository.commitWorldVerification(
         provider.id,
         canonicalNullifier,
         verification,
@@ -194,8 +194,8 @@ export function createRegistry(options: RegistryOptions = {}) {
       if (committed !== 'VERIFIED') throw new RegistryError(committed);
       return verification;
     },
-    createService(request: CreateServiceRequest) {
-      const provider = getProvider(request.providerId);
+    async createService(request: CreateServiceRequest) {
+      const provider = await getProvider(request.providerId);
       const endpoint = approvedEndpoint(request.capability);
       if (!endpoint) throw new RegistryError('ENDPOINT_NOT_ALLOWED');
       const now = currentTime();
@@ -214,15 +214,15 @@ export function createRegistry(options: RegistryOptions = {}) {
           payTo: provider.payoutAccount,
         },
       });
-      repository.createService(service);
+      await repository.createService(service);
       return service;
     },
-    activateService(id: Identifier) {
-      const stored = repository.getService(id);
+    async activateService(id: Identifier) {
+      const stored = await repository.getService(id);
       if (!stored) throw new RegistryError('SERVICE_NOT_FOUND');
       const service = ServiceListingSchema.parse(stored);
       if (service.id !== id) throw new RegistryError('INTERNAL_ERROR');
-      const provider = repository.getProvider(service.providerId);
+      const provider = await repository.getProvider(service.providerId);
       if (!provider || provider.id !== service.providerId)
         throw new RegistryError('PROVIDER_NOT_FOUND');
       if (service.status === 'ACTIVE')
@@ -241,38 +241,48 @@ export function createRegistry(options: RegistryOptions = {}) {
         status: 'ACTIVE',
         updatedAt: now,
       });
-      repository.updateService(activated);
+      if (!(await repository.updateService(activated))) {
+        const current = await repository.getService(id);
+        if (current?.status === 'ACTIVE')
+          throw new RegistryError('SERVICE_STATE_CONFLICT');
+        throw new RegistryError('INTERNAL_ERROR');
+      }
       return activated;
     },
-    listServices(query: ListServicesQuery) {
+    async listServices(query: ListServicesQuery) {
       const now = currentTime();
-      const services = repository.listServices().flatMap((stored) => {
-        const service = ServiceListingSchema.parse(stored);
-        if (service.status !== 'ACTIVE') return [];
-        const provider = repository.getProvider(service.providerId);
-        if (
-          !provider ||
-          provider.id !== service.providerId ||
-          !isCurrentlyVerified(provider, now) ||
-          service.endpoint !== approvedEndpoint(service.capability)
+      const services = (
+        await Promise.all(
+          (await repository.listServices()).map(async (stored) => {
+            const service = ServiceListingSchema.parse(stored);
+            if (service.status !== 'ACTIVE') return [];
+            const provider = await repository.getProvider(service.providerId);
+            if (
+              !provider ||
+              provider.id !== service.providerId ||
+              !isCurrentlyVerified(provider, now) ||
+              service.endpoint !== approvedEndpoint(service.capability)
+            )
+              return [];
+            const price = service.paymentRequirements;
+            if (
+              (query.capability !== undefined &&
+                query.capability !== service.capability) ||
+              (query.network !== undefined &&
+                query.network !== price.network) ||
+              (query.asset !== undefined && query.asset !== price.asset)
+            )
+              return [];
+            if (
+              query.maxAmountAtomic !== undefined &&
+              BigInt(AtomicAmountSchema.parse(price.amountAtomic)) >
+                BigInt(AtomicAmountSchema.parse(query.maxAmountAtomic))
+            )
+              return [];
+            return [{ service, provider }];
+          }),
         )
-          return [];
-        const price = service.paymentRequirements;
-        if (
-          (query.capability !== undefined &&
-            query.capability !== service.capability) ||
-          (query.network !== undefined && query.network !== price.network) ||
-          (query.asset !== undefined && query.asset !== price.asset)
-        )
-          return [];
-        if (
-          query.maxAmountAtomic !== undefined &&
-          BigInt(AtomicAmountSchema.parse(price.amountAtomic)) >
-            BigInt(AtomicAmountSchema.parse(query.maxAmountAtomic))
-        )
-          return [];
-        return [{ service, provider }];
-      });
+      ).flat();
       return ListServicesResponseSchema.parse({ services });
     },
   };

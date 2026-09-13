@@ -1,5 +1,10 @@
 # Y06 public deployment handoff
 
+Pending T05 repair: [registry durability fix](bazantic-t05-discovery-fix.md)
+requires migration 002_registry before deploying the updated API. The recorded
+deployment below predates that repair; its in-memory restart limitation remains
+applicable until the new code and migration are deployed under separate approval.
+
 Status: Y06 public deployment and backend G4 completed on 2026-09-12 from
 `4580b20c67135fd857389c919972112235961f44` on
 `chore/y06-public-deployment-final`. I04 is merged and its World verification
@@ -221,13 +226,15 @@ bodies, authorization headers, database connection strings or private keys.
 
 ## Database initialization and readiness
 
-Schema creation is **not automatic**. Before starting the API, have the approved
-database operator apply `apps/api/migrations/001_agent_runs.sql` once to the same
-database and schema used by the runtime role. With libpq connection settings
-provided securely outside shell history, use:
+Schema creation is **not automatic**. Before starting the updated API, have the
+approved database operator apply both migrations in order to the same database
+and schema used by the runtime role. Both files are repeatable and rely on the
+caller's transaction. With libpq connection settings provided securely outside
+shell history, use:
 
 ```sh
 psql -X --set=ON_ERROR_STOP=1 --single-transaction --file=apps/api/migrations/001_agent_runs.sql
+psql -X --set=ON_ERROR_STOP=1 --single-transaction --file=apps/api/migrations/002_registry.sql
 ```
 
 Supply `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSFILE`, `PGSSLMODE` and,
@@ -239,28 +246,44 @@ These are operator-side psql settings, not additional API environment variables.
 Use a currently supported PostgreSQL release. The schema requires JSONB,
 transactions, foreign keys, partial indexes and ordinary catalog access; no
 extension is required. No minimum server version is declared or integration-tested
-by this repository. The migration role needs schema/table/index creation rights;
-the API role needs schema usage, SELECT/INSERT/UPDATE on run/payment tables and
-SELECT on the migration table. Both must resolve the same schema/search path.
-Reserve capacity for the API pool's maximum ten connections plus administration.
+by this repository. The migration role needs schema/table/index creation rights.
+The API role needs schema usage; SELECT/INSERT/UPDATE on `agent_runs`,
+`agent_run_payment_tombstones`, `registry_providers`, and `registry_services`;
+SELECT/INSERT on `registry_world_replays`; and SELECT on
+`proofserve_schema_migrations`. Both roles must resolve the same schema/search
+path. The API uses separate pools with maxima of ten agent-run connections and
+five registry connections. Reserve at least fifteen API connections plus operator
+and platform administration capacity before deployment.
 
 For non-loopback hosts, source enforces verified TLS and accepts only absent
 `sslmode` or `verify-full`; do not use `require`, disable verification, or add
 certificate override URL parameters. Provider TLS incompatibility is a blocker
 to report to Yhlas, not permission to weaken database security.
 
-Startup awaits `repository.assertReady()` before listening. It checks the migration
-marker, tables, required columns, keys and reconciliation index. Database connection
-timeout is ten seconds; there is no startup retry loop or automatic migration.
-Provision/migrate first, then start or retry the API after availability is restored.
-The health endpoint is process liveness, not a continuous database/dependency probe
-and not a side-effect-free startup probe.
+Startup awaits both repository readiness checks before listening or reconciling.
+They require migration markers 001 and 002, exact required column sets and types,
+primary keys, exact validated and enforced registry CHECK definitions, the exact
+service-provider foreign-key mapping and actions, enabled foreign-key enforcement
+triggers, and the reconciliation index. Registry readiness also uses PostgreSQL's
+read-only privilege inspection functions to require schema usage and the documented
+runtime table privileges; it does not mutate data to probe permissions. An absent,
+partial, incompatible, or insufficiently privileged schema fails startup closed.
+Database connection timeout is ten seconds; there is no startup retry loop or
+automatic migration. Provision/migrate first, then start or retry the API after
+availability is restored.
+
+The registry pool installs an idle-client error listener immediately on creation.
+The driver removes the failed idle client; the listener emits no database diagnostic,
+and the next operation either obtains a replacement connection or returns the API's
+fixed internal error. The health endpoint is process liveness, not a continuous
+database/dependency probe and not a side-effect-free startup probe.
 
 ### Required pre-start database safety gate
 
 Run the following exact read-only inspection through a secured operator `psql`
 session against the same database and schema as the API. The first result counts
-the only run/payment tables created by the migration. The second uses the same
+the durable run, payment, and registry tables created by the migrations. The second
+uses the same
 durable nonterminal predicate and ordering as `listReconciliationRunIds()` while
 showing only safe operational metadata:
 
@@ -269,7 +292,10 @@ BEGIN TRANSACTION READ ONLY;
 
 SELECT
   (SELECT count(*) FROM agent_runs) AS agent_run_count,
-  (SELECT count(*) FROM agent_run_payment_tombstones) AS payment_tombstone_count;
+  (SELECT count(*) FROM agent_run_payment_tombstones) AS payment_tombstone_count,
+  (SELECT count(*) FROM registry_providers) AS provider_count,
+  (SELECT count(*) FROM registry_services) AS service_count,
+  (SELECT count(*) FROM registry_world_replays) AS world_replay_count;
 
 SELECT
   r.id AS run_id,
@@ -308,19 +334,23 @@ required before recovery.
 
 ## State and redeployment constraints
 
-Providers, services and World replay protection are process-memory state; only
-agent runs/payment state use PostgreSQL. Run exactly one long-lived API instance:
-no serverless request processes, replicas or horizontal scaling. A restart loses
-registry/verification/replay state even though run receipts survive.
+The updated API stores providers, services, verification metadata, World replay
+identifiers, agent runs, and payment safety records in PostgreSQL. Restarting the
+updated API does not erase these records. Discovery still rechecks verification
+expiry and the configured endpoint at request time. Run exactly one long-lived
+API instance for this deployment; payment reconciliation remains operated under
+the existing single-instance safety policy.
 
 Schedule API deploys during a maintenance window and follow the pre-start gate
-above. Ensure the old process stops before routing traffic to the new one: even a
-single-replica rolling deploy can briefly overlap processes with different
-registry/replay state. Confirm the provider's stop/start procedure before
-deployment. Recreate provider/service records and perform real verification after
-restart; do not seed a verified status. Payment tombstones are permanent safety
-records: preserve them and their associated runs, transaction IDs and receipts.
-Never delete payment tables or records to reset a demo.
+above. Ensure the old process stops before routing traffic to the new one and
+confirm the provider's stop/start procedure before deployment. Migration 002
+cannot recover provider, service, verification, or replay records already lost
+from the old in-memory registry. After the first migration/deployment, recreate
+missing provider/service records through the public API, perform real World
+verification, and activate the service explicitly; never seed or derive VERIFIED
+state from an old run or receipt. Once recreated under the updated API, those
+records survive later restarts. Payment tombstones are permanent safety records:
+preserve them and their associated runs, transaction IDs and receipts.
 
 ## Completed deployment and remaining acceptance
 
@@ -338,16 +368,15 @@ For every later manual deployment, restart, cold start, or wake:
    a human payment owner explicitly authorizes recovery of every listed run.
 3. Keep exactly one API instance, automatic API deployment disabled, and the API
    free of generic uptime pings or other automatic keep-awake traffic.
-4. If the API restarts, recreate the provider and service and perform real World
-   verification again because registry and World verification state are held in
-   process memory. Never seed a verified status.
+4. After the first migration/deployment, recreate only records that were already
+   lost from the old in-memory registry, then perform real World verification and
+   explicit activation. Later restarts retain those PostgreSQL records, while
+   expired verification remains ineligible.
 5. Preserve durable run records, payment tombstones, transaction IDs, and
    receipts. Never delete or reset them to repeat a demonstration, and never
    substitute fake verification or payment success.
 
-## Validation for this documentation update
-
-Format only `docs/deployment.md`, then run `git diff --check` and
-`git diff --check origin/main HEAD`. Do not install dependencies, run builds,
-restart or redeploy a service, or initiate another payment during this
-documentation-only pass.
+Before deployment, run the opt-in PostgreSQL integration suite against a disposable
+loopback database, then run `npm run validate`. Deployment, migration application,
+record recreation, World verification, service activation, and a new agent run
+each remain separately authorized operational actions.

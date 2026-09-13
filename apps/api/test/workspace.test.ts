@@ -16,6 +16,7 @@ afterEach(() => {
   vi.doUnmock('../src/agent-runs.js');
   vi.doUnmock('../src/app.js');
   vi.doUnmock('../src/postgres-agent-run-repository.js');
+  vi.doUnmock('../src/postgres-registry-repository.js');
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
@@ -147,59 +148,93 @@ it('preserves canonical local HTTP buyer URLs for development', async () => {
   });
 });
 
-it('closes Fastify and PostgreSQL through import-local signal handlers', async () => {
-  vi.resetModules();
-  let closeHook: (() => Promise<void>) | undefined;
-  const repository = {
-    assertReady: vi.fn(async () => undefined),
-    close: vi.fn(async () => undefined),
-  };
-  const close = vi.fn(async () => closeHook?.());
-  const listen = vi.fn(async () => 'http://127.0.0.1:3001');
-  const reconcile = vi.fn(async () => undefined);
-  vi.doMock('@proofserve/agent', () => ({
-    createProductionBuyerSignerFactory: vi.fn(async () => () => ({
-      accountId: '0.0.654321',
-      createPartiallySignedTransferTransaction: vi.fn(),
-    })),
-    validateBuyerConfiguration: vi.fn((configuration) => configuration),
-  }));
-  vi.doMock('../src/postgres-agent-run-repository.js', () => ({
-    createPostgresAgentRunRepository: vi.fn(() => repository),
-  }));
-  vi.doMock('../src/agent-runs.js', () => ({
-    createAgentRunService: vi.fn(() => ({ reconcile })),
-  }));
-  vi.doMock('../src/app.js', () => ({
-    validateAgentRunApiToken: vi.fn((token) => token),
-    createApiApp: vi.fn(() => ({
-      addHook: vi.fn((name, hook) => {
-        if (name === 'onClose') closeHook = hook;
+it.each([false, true])(
+  'handles registry readiness failure=%s before listening and closes pools',
+  async (failReadiness) => {
+    vi.resetModules();
+    let closeHook: (() => Promise<void>) | undefined;
+    const repository = {
+      assertReady: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const close = vi.fn(async () => closeHook?.());
+    const registryRepository = {
+      assertReady: vi.fn(async () => {
+        if (failReadiness) throw new Error('missing migration');
       }),
-      close,
-      listen,
-    })),
-  }));
-  const sigtermBefore = new Set(process.listeners('SIGTERM'));
-  const sigintBefore = new Set(process.listeners('SIGINT'));
-  const { startServer } = await import('../src/server.js');
-  await startServer({
-    PORT: '3001',
-    DATABASE_URL: 'postgresql://proofserve:fictional@127.0.0.1:5432/proofserve',
-    TRIAGE_SERVICE_ENDPOINT: 'https://triage.example.test/v1/triage',
-    AGENT_REGISTRY_BASE_URL: 'https://api.example.test',
-    AGENT_RUN_API_TOKEN: 'test-only-agent-run-token-00000000000000000000',
-    HEDERA_PAYER_ACCOUNT_ID: '0.0.654321',
-    HEDERA_PAYER_PRIVATE_KEY: 'fictional',
-    ...worldEnvironment,
-  });
-  const shutdown = process
-    .listeners('SIGTERM')
-    .find((listener) => !sigtermBefore.has(listener));
-  expect(shutdown).toBeDefined();
-  shutdown?.('SIGTERM');
-  await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
-  expect(repository.close).toHaveBeenCalledOnce();
-  expect(process.listeners('SIGTERM')).toEqual([...sigtermBefore]);
-  expect(process.listeners('SIGINT')).toEqual([...sigintBefore]);
-});
+      close: vi.fn(async () => undefined),
+    };
+    vi.doMock('../src/postgres-registry-repository.js', () => ({
+      createPostgresRegistryRepository: vi.fn(() => registryRepository),
+    }));
+    const listen = vi.fn(async () => 'http://127.0.0.1:3001');
+    const reconcile = vi.fn(async () => undefined);
+    vi.doMock('@proofserve/agent', () => ({
+      createProductionBuyerSignerFactory: vi.fn(async () => () => ({
+        accountId: '0.0.654321',
+        createPartiallySignedTransferTransaction: vi.fn(),
+      })),
+      validateBuyerConfiguration: vi.fn((configuration) => configuration),
+    }));
+    vi.doMock('../src/postgres-agent-run-repository.js', () => ({
+      createPostgresAgentRunRepository: vi.fn(() => repository),
+    }));
+    vi.doMock('../src/agent-runs.js', () => ({
+      createAgentRunService: vi.fn(() => ({ reconcile })),
+    }));
+    let capturedApiOptions: { repository?: unknown } | undefined;
+    const createApiApp = vi.fn((options: { repository?: unknown }) => {
+      capturedApiOptions = options;
+      return {
+        addHook: vi.fn((name, hook) => {
+          if (name === 'onClose') closeHook = hook;
+        }),
+        close,
+        listen,
+      };
+    });
+    vi.doMock('../src/app.js', () => ({
+      validateAgentRunApiToken: vi.fn((token) => token),
+      createApiApp,
+    }));
+    const sigtermBefore = new Set(process.listeners('SIGTERM'));
+    const sigintBefore = new Set(process.listeners('SIGINT'));
+    const { startServer } = await import('../src/server.js');
+    const startup = startServer({
+      PORT: '3001',
+      DATABASE_URL:
+        'postgresql://proofserve:fictional@127.0.0.1:5432/proofserve',
+      TRIAGE_SERVICE_ENDPOINT: 'https://triage.example.test/v1/triage',
+      AGENT_REGISTRY_BASE_URL: 'https://api.example.test',
+      AGENT_RUN_API_TOKEN: 'test-only-agent-run-token-00000000000000000000',
+      HEDERA_PAYER_ACCOUNT_ID: '0.0.654321',
+      HEDERA_PAYER_PRIVATE_KEY: 'fictional',
+      ...worldEnvironment,
+    });
+    if (failReadiness) {
+      await expect(startup).rejects.toThrow('API persistence unavailable');
+      expect(listen).not.toHaveBeenCalled();
+      expect(reconcile).not.toHaveBeenCalled();
+      expect(createApiApp).not.toHaveBeenCalled();
+      expect(repository.close).toHaveBeenCalledOnce();
+      expect(registryRepository.close).toHaveBeenCalledOnce();
+      return;
+    }
+    await startup;
+    expect(capturedApiOptions).toEqual(
+      expect.objectContaining({ repository: registryRepository }),
+    );
+    expect(capturedApiOptions?.repository).toBe(registryRepository);
+    const shutdown = process
+      .listeners('SIGTERM')
+      .find((listener) => !sigtermBefore.has(listener));
+    expect(shutdown).toBeDefined();
+    shutdown?.('SIGTERM');
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    expect(repository.close).toHaveBeenCalledOnce();
+    expect(registryRepository.assertReady).toHaveBeenCalledOnce();
+    expect(registryRepository.close).toHaveBeenCalledOnce();
+    expect(process.listeners('SIGTERM')).toEqual([...sigtermBefore]);
+    expect(process.listeners('SIGINT')).toEqual([...sigintBefore]);
+  },
+);

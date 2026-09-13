@@ -354,13 +354,13 @@ for process-wide replay protection. Equivalent decimal or hexadecimal forms,
 hex digit/prefix casing, and leading zeros resolve to the same key. The raw
 IDKit result, proof, nonce, signal, RP signature, signing key, and upstream
 response are not persisted or logged.
-The replay check and provider update are one synchronous repository operation,
-so concurrent equivalent submissions cannot both succeed. The default replay
-store is shared by every repository/application instance in the Node process
-while provider and service maps remain isolated. Tests may inject an isolated
-replay store. A failed provider update rolls back its replay claim and provider
-state. This MVP store survives repository/application recreation within the
-process and resets only when the Node process restarts.
+In production, the replay claim and provider update are one PostgreSQL transaction.
+The provider row is locked and a unique canonical-nullifier key prevents concurrent
+claims, including across API instances and restarts. A failed provider write rolls
+back the replay claim. Providers, services, verification metadata, and replay
+identifiers persist in PostgreSQL after migration 002_registry; startup fails closed
+if the migration is absent. No proof payload is stored. Test-only in-memory
+repositories retain process-scoped replay behavior and are not production storage.
 
 The upstream response is accepted only as the current strict v4 uniqueness
 success shape described above. A structurally valid HTTP 400 carrying an exact
@@ -520,7 +520,7 @@ Purpose: discover only ACTIVE services whose providers have current verification
 No request body. Optional query parameters: capability, network, asset,
 maxAmountAtomic. Query values are strings; duplicate keys and unknown parameters
 must be rejected. With no filters, return all eligible MVP services. No pagination
-is planned for this in-memory MVP. An empty match returns an empty services array.
+is planned for this MVP. An empty match returns an empty services array.
 
 Example URL:
 `/api/services?capability=SUPPORT_TICKET_TRIAGE&network=hedera:testnet&asset=0.0.0&maxAmountAtomic=2000000`.
