@@ -1,9 +1,11 @@
 # Y06 public deployment handoff
 
 Pending T05 repair: [registry durability fix](bazantic-t05-discovery-fix.md)
-requires migration 002_registry before deploying the updated API. The recorded
-deployment below predates that repair; its in-memory restart limitation remains
-applicable until the new code and migration are deployed under separate approval.
+requires migration 002_registry before a paired Web/API rollout. Build and deploy
+both applications from the same final merged commit during one maintenance
+window. The recorded deployment below predates that repair; its in-memory restart
+limitation remains applicable until the new code and migration are deployed under
+separate approval.
 
 Status: Y06 public deployment and backend G4 completed on 2026-09-12 from
 `4580b20c67135fd857389c919972112235961f44` on
@@ -60,11 +62,11 @@ For each application, leave Root Directory unset so npm can access all workspace
 Use `npm ci --include=dev && npm run build:web` as the web build command, substituting
 `build:api` or `build:service` for the others; use the start commands above.
 Select a Node version matching the root engine constraint. Use one free instance
-for Web and triage, and exactly one API instance with no replicas. Keep API
-autoscaling and automatic deploys disabled. Configure Web and triage health checks
-as above. Configure or invoke API `/health` only after the database startup safety
-gate below has passed. Do not attach a generic uptime ping or other keep-awake
-monitor to the API. HTTPS URLs are assigned by the host.
+for Web and triage, and exactly one API instance with no replicas. Keep Web and
+API automatic deploys disabled, and keep API autoscaling disabled. Configure Web
+and triage health checks as above. Configure or invoke API `/health` only after the
+database startup safety gate below has passed. Do not attach a generic uptime ping
+or other keep-awake monitor to the API. HTTPS URLs are assigned by the host.
 
 Render Free Web Services sleep after 15 minutes idle and may restart. For the API,
 a sleep/wake cycle is a restart: a request to `/health` can wake the process and
@@ -79,9 +81,10 @@ demonstration during one active session. The free PostgreSQL database expires
 after 30 days. This arrangement is hackathon/demo hosting, not production
 durability.
 
-Automatic uptime pings remain prohibited. Automatic API deployment also remains
-prohibited: every API restart or deployment must pass the database safety gate
-documented below before the process is started or woken.
+Automatic uptime pings remain prohibited. Automatic Web and API deployments also
+remain prohibited so their versions can be coordinated: every API restart or
+deployment must pass the database safety gate documented below before the process
+is started or woken.
 
 Render supports [monorepos](https://render.com/docs/monorepo-support),
 [Node web services](https://render.com/docs/web-services), and
@@ -375,7 +378,8 @@ sufficient, and the nonterminal query must again return zero rows. For an initia
 deployment to a new database, the run/payment counts must also be zero. A query or
 permission failure stops the gate; do not start the updated API.
 
-After building the API, run both application readiness checks without opening a
+After building both rollout artifacts with `npm run build:api` and
+`npm run build:web`, run both API application readiness checks without opening a
 listener. `DATABASE_URL` must already be supplied securely in the environment:
 
 ```sh
@@ -418,17 +422,40 @@ expiry and the configured endpoint at request time. Run exactly one long-lived
 API instance for this deployment; payment reconciliation remains operated under
 the existing single-instance safety policy.
 
-Schedule this database upgrade during a maintenance window and follow both ordered
-gates above. For later deploys after migration 002, repeat the post-migration gate.
-Ensure the old process stops before routing traffic to the new one and
-confirm the provider's stop/start procedure before deployment. Migration 002
-cannot recover provider, service, verification, or replay records already lost
-from the old in-memory registry. After the first migration/deployment, recreate
-missing provider/service records through the public API, perform real World
-verification, and activate the service explicitly; never seed or derive VERIFIED
-state from an old run or receipt. Once recreated under the updated API, those
-records survive later restarts. Payment tombstones are permanent safety records:
-preserve them and their associated runs, transaction IDs and receipts.
+Schedule this database upgrade and paired Web/API rollout during one maintenance
+window and follow both ordered gates above. For later deploys after migration
+002, repeat the post-migration gate. Ensure the old API process stops before
+routing traffic to the new one and confirm the provider's stop/start procedure
+before deployment.
+
+Treat the T05 nonce-bound signal change as a coordinated rollout, not an API-only
+deployment:
+
+1. Build Web and API from the exact same final merged commit with
+   `npm run build:web` and `npm run build:api`.
+2. Before exposing public write paths, resolve the abuse-control decision: either
+   apply effective access restrictions and/or rate limits, or obtain explicit
+   human acceptance of the remaining risk. This remains an unresolved operational
+   decision; this document does not claim controls are implemented or risk
+   acceptance is approved.
+3. Keep World verification traffic blocked while either application is being
+   replaced. Deploy both matching versions during the same maintenance window,
+   and do not admit that traffic until both versions are running. Triage does not
+   need redeployment for this signal change.
+4. Recreate only provider/service records already lost from the old in-memory
+   registry; never seed or derive VERIFIED state from an old run or receipt.
+5. With both matching versions running, confirm that the server-issued,
+   nonce-bound context passes through the Web proxy to the API. Only then, and
+   under separate operational authorization, perform real World verification and
+   explicit service activation.
+
+Migration 002 cannot recover provider, service, verification, nullifier, or replay
+records already lost from the old in-memory registry. Once recreated under the
+updated API, provider/service records survive later restarts. World nullifier
+ownership and replay/context rows, including consumed or expired rows, are
+permanent safety records. Preserve them together with payment tombstones and their
+associated runs, transaction IDs, and receipts; never delete, truncate, or reset
+them to repeat onboarding, verification, or a demonstration.
 
 ## Completed deployment and remaining acceptance
 
@@ -436,26 +463,42 @@ Y06 public deployment and the backend G4 run are complete. The public URLs,
 onboarding result, payment evidence, model result, and final read-only database
 inspection are recorded above. The backend G4 evidence does not complete I05:
 the final browser execution-timeline demonstration remains outstanding until I05
-is implemented and accepted.
+is implemented and accepted. Latest-head PostgreSQL validation has passed; live
+T05 acceptance remains pending. The historical G4 evidence above does not satisfy
+that live acceptance.
 
 For every later manual deployment, restart, cold start, or wake:
 
-1. Stop new run submissions, allow active runs to finish, and execute the
+1. For a version-changing deployment, build matching Web and API versions from
+   the same final merged commit. A plain restart, cold start, or wake of an
+   unchanged version does not require a Web rebuild.
+2. Stop new run submissions, allow active runs to finish, and execute the
    post-migration read-only and application readiness gates above.
-2. Start or wake the API only when the nonterminal result has zero rows. Recovery
-   of any listed run requires a separate payment-owner procedure outside this
-   deployment gate.
-3. Keep exactly one API instance, automatic API deployment disabled, and the API
-   free of generic uptime pings or other automatic keep-awake traffic.
-4. After the first migration/deployment, recreate only records that were already
-   lost from the old in-memory registry, then perform real World verification and
-   explicit activation. Later restarts retain those PostgreSQL records, while
-   expired verification remains ineligible.
-5. Preserve durable run records, payment tombstones, transaction IDs, and
-   receipts. Never delete or reset them to repeat a demonstration, and never
+3. Start or wake the API only when the nonterminal result has zero rows. For a
+   version-changing deployment, keep World verification traffic blocked, deploy
+   Web and API in one maintenance window, and do not route that traffic until both
+   matching versions are running. Recovery of any listed run requires a separate
+   payment-owner procedure outside this deployment gate.
+4. Keep exactly one API instance, automatic Web and API deployment disabled, and
+   the API free of generic uptime pings or other automatic keep-awake traffic.
+5. Before exposing public write paths, resolve the still-open abuse-control
+   decision with effective restrictions and/or rate limits or explicit human risk
+   acceptance.
+6. After the first paired rollout, recreate only records that were already lost
+   from the old in-memory registry. Later restarts retain the PostgreSQL records,
+   while expired verification remains ineligible.
+7. For the T05 rollout, confirm the nonce-bound context through the Web proxy
+   before separately authorized real World verification and explicit activation.
+   Triage needs no redeployment for this signal change.
+8. Preserve durable run records, World nullifier ownership, replay/context rows,
+   payment tombstones, transaction IDs, and receipts. Never delete, truncate, or
+   reset them to repeat onboarding, verification, or a demonstration, and never
    substitute fake verification or payment success.
 
-Before deployment, run the opt-in PostgreSQL integration suite against a disposable
-loopback database, then run `npm run validate`. Deployment, migration application,
-record recreation, World verification, service activation, and a new agent run
-each remain separately authorized operational actions.
+Before the T05 rollout, run the opt-in PostgreSQL integration suite at the latest
+head against a disposable loopback database, then run `npm run validate`. That
+latest-head PostgreSQL integration suite passed all 11 tests against a disposable
+loopback database. Deployment, migration application,
+record recreation, proxy-path confirmation, real World verification, service
+activation, and a new agent run each remain separately authorized operational
+actions; live T05 acceptance remains pending.

@@ -912,8 +912,11 @@ describe.skipIf(!configuredUrl)('PostgreSQL agent run integration', () => {
 
   it('rejects a SELECT-only registry role and accepts all required privileges', async () => {
     const role = `t05_registry_role_${randomUUID().replaceAll('-', '')}`;
+    const rolePassword = randomUUID();
     let restrictedPool: Pool | undefined;
-    await administration.query(`CREATE ROLE ${role} LOGIN`);
+    await administration.query(
+      `CREATE ROLE ${role} LOGIN PASSWORD '${rolePassword}'`,
+    );
     try {
       await administration.query(`GRANT USAGE ON SCHEMA ${schema} TO ${role}`);
       await administration.query(
@@ -927,7 +930,7 @@ describe.skipIf(!configuredUrl)('PostgreSQL agent run integration', () => {
       );
       const restrictedUrl = new URL(scopedConnectionString);
       restrictedUrl.username = role;
-      restrictedUrl.password = '';
+      restrictedUrl.password = rolePassword;
       restrictedPool = new Pool(
         validatePostgresConnectionString(restrictedUrl.toString()),
       );

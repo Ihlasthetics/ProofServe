@@ -80,18 +80,32 @@ After human diff review and separate operational authorization:
 3. Grant the runtime role the documented registry permissions, reserve capacity
    for both API pools, and complete the post-migration structural, privilege,
    run/payment, and application-readiness gate before starting or routing traffic.
-4. Build the API with `npm run build:api` and deploy it under separate approval.
-5. Old in-memory records are not imported. If lost, perform fresh onboarding,
-   real World verification, and explicit service activation. Old run receipts
-   cannot authorize verification or restore replay history.
-6. Only then consider a separately approved new Recipe run. FAILED runs remain
+4. From the exact same final merged commit, build both rollout artifacts with
+   `npm run build:api` and `npm run build:web`.
+5. Before exposing public write paths, resolve the abuse-control decision: either
+   apply effective access restrictions and/or rate limits, or obtain explicit
+   human acceptance of the remaining risk. This remains unresolved; neither
+   implemented controls nor approved risk acceptance are claimed here.
+6. During one maintenance window, keep World verification traffic blocked and
+   deploy matching Web and API versions. Do not admit that traffic until both
+   versions are running. Triage needs no redeployment for this signal change.
+7. Old in-memory records are not imported. If lost, perform fresh onboarding.
+   Old run receipts cannot authorize verification or restore replay history.
+8. Confirm that the server-issued, nonce-bound context passes through the Web
+   proxy to the API. Only then, and under separate operational authorization,
+   perform real World verification and explicit service activation.
+9. Only then consider a separately approved new Recipe run. FAILED runs remain
    terminal and are not retried by this change.
 
+Permanent World nullifier ownership, replay/context rows, payment tombstones,
+runs, transaction IDs, and receipts must never be deleted, truncated, or reset to
+repeat onboarding, verification, or a demonstration.
+
 The existing deployment notes describe the old deployment until this fix is
-actually deployed. Keep API auto-deploy/uptime pings disabled and retain its
-startup payment-safety gate. Database persistence does not remove verification
-expiry or protect against database loss. Historical replay claims lost before
-migration cannot be recovered by this patch.
+actually deployed. Keep Web/API auto-deploys and API uptime pings disabled, and
+retain the API startup payment-safety gate. Database persistence does not remove
+verification expiry or protect against database loss. Historical replay claims
+lost before migration cannot be recovered by this patch.
 
 ## Local validation
 
@@ -104,6 +118,7 @@ migration cannot be recovered by this patch.
 - Full validation passed formatting, lint, typechecking, all builds, and 1,014
   ordinary tests: agent 223, API 325, service 87, web 248, and shared 131. The 11
   opt-in PostgreSQL tests were skipped because no loopback test URL was available.
+  Latest-head PostgreSQL validation passed all 11 opt-in integration tests against a disposable loopback-only PostgreSQL 16.15 cluster.
 - In the earlier durable-registry validation, all 11 PostgreSQL integration tests
   passed against a disposable loopback-only
   PostgreSQL 16.15 cluster, matching the production major version. The test applied
@@ -121,6 +136,11 @@ migration cannot be recovered by this patch.
   package manifests nor `package-lock.json` changed.
 - Final lint, typecheck, build, diff, and full validation results are recorded in
   the human review report produced with this change.
+
+Live T05 acceptance also remains pending. It requires the paired rollout,
+nonce-bound Web proxy confirmation, separately authorized real World verification,
+and explicit activation described above. The historical tests and G4 evidence are
+preserved as historical evidence and do not satisfy this live acceptance.
 
 No live database query/mutation, deployment, service restart, payment request, or
 Recipe execution was performed. Local database mutations were confined to the
