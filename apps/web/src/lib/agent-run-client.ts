@@ -19,6 +19,8 @@ const uncertainCreation =
   'The run-creation outcome is uncertain. A run may already be processing or paid, so do not resubmit. Ask the demo operator to reconcile backend run and payment records.';
 const pollingAuthorizationLost =
   'This local run view is no longer authorized and automatic polling has stopped. Ask the demo operator to reconcile this existing run; do not start another paid run.';
+const authoritativeRunMissing =
+  'The server authoritatively reports that this run no longer exists, so automatic polling has stopped. Ask the demo operator to reconcile this run; do not start another paid run.';
 const certainCreationRejections = {
   VALIDATION_ERROR: 400,
   UNAUTHORIZED: 401,
@@ -168,6 +170,13 @@ export function createAgentRunClient(fetcher: typeof fetch = fetch) {
               'Agent-run authorization is unavailable.')
         )
           throw new AgentRunRequestError(pollingAuthorizationLost, false, true);
+        if (
+          response.status === 404 &&
+          parsed.success &&
+          parsed.data.error.code === 'RUN_NOT_FOUND' &&
+          parsed.data.error.message === 'Agent run not found.'
+        )
+          throw new AgentRunRequestError(authoritativeRunMissing, false, true);
         throw new AgentRunRequestError(
           safeErrors[code as keyof typeof safeErrors] ??
             'Run status is temporarily unavailable. Retrying is safe.',

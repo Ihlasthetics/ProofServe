@@ -10,6 +10,7 @@ import { agentRun, agentTask } from './agent-run-fixtures';
 const token = 'test-agent-run-token-000000000000000000000';
 const access = 'test-demo-access-code';
 const capabilitySecret = 'test-capability-secret-00000000000000000000';
+const collisionSecret = 'test-collision-secret-000000000000000000000';
 const json = (body: unknown, status = 200, headers?: HeadersInit) =>
   new Response(JSON.stringify(body), {
     status,
@@ -53,6 +54,49 @@ function configure() {
   vi.stubEnv('AGENT_RUN_WEB_ACCESS_TOKEN', access);
   vi.stubEnv('AGENT_RUN_CAPABILITY_SECRET', capabilitySecret);
 }
+
+it.each([
+  ['API and Web access', collisionSecret, collisionSecret, capabilitySecret],
+  ['API and capability', token, access, token],
+  ['Web access and capability', token, collisionSecret, collisionSecret],
+] as const)(
+  'rejects the %s secret collision without calling upstream',
+  async (_collision, apiToken, webAccessToken, sessionSecret) => {
+    vi.stubEnv('AGENT_RUN_API_TOKEN', apiToken);
+    vi.stubEnv('AGENT_RUN_WEB_ACCESS_TOKEN', webAccessToken);
+    vi.stubEnv('AGENT_RUN_CAPABILITY_SECRET', sessionSecret);
+    const fetcher = vi.fn<typeof fetch>();
+    const response = await agentRunBoundary(
+      browser('/api/agent/runs', 'POST', agentTask),
+      fetcher,
+    );
+    expect(response.status).toBe(500);
+    expect(fetcher).not.toHaveBeenCalled();
+    const responseText = await response.text();
+    expect(responseText).not.toContain(apiToken);
+    expect(responseText).not.toContain(webAccessToken);
+    expect(responseText).not.toContain(sessionSecret);
+    expect(ApiErrorResponseSchema.parse(JSON.parse(responseText))).toEqual({
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'The agent-run request could not be completed.',
+      },
+    });
+  },
+);
+
+it('accepts three pairwise-distinct production secrets', async () => {
+  configure();
+  const fetcher = vi
+    .fn<typeof fetch>()
+    .mockResolvedValue(json(agentRun(), 202));
+  const response = await agentRunBoundary(
+    browser('/api/agent/runs', 'POST', agentTask),
+    fetcher,
+  );
+  expect(response.status).toBe(202);
+  expect(fetcher).toHaveBeenCalledOnce();
+});
 
 async function sessionForRun(
   now = Date.now(),

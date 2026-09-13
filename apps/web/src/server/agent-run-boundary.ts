@@ -115,6 +115,7 @@ function agentApiConfiguration() {
     capabilitySecret.length < 32 ||
     capabilitySecret.length > 512 ||
     /\s/.test(capabilitySecret) ||
+    webAccessToken === token ||
     capabilitySecret === token ||
     capabilitySecret === webAccessToken
   )

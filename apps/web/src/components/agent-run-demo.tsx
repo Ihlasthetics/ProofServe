@@ -275,8 +275,8 @@ export function AgentRunView({
             aria-describedby="agent-access-help"
           />
           <p id="agent-access-help">
-            Separate Web authorization supplied by the demo operator. It is kept
-            only in this page session and is not a payment credential.
+            This is not a wallet or signing key, but it authorizes demo runs
+            that may spend testnet HBAR.
           </p>
           <label htmlFor="agent-ticket">Support request</label>
           <textarea
@@ -313,7 +313,7 @@ export function AgentRunView({
           : state.refreshing
             ? 'Refreshing authoritative run status.'
             : state.run && state.pollingPermanentlyStopped
-              ? 'Automatic polling stopped because this local run view is no longer authorized.'
+              ? 'Automatic polling stopped for this run.'
               : state.run && !terminal
                 ? `Run in progress: ${statusLabels[state.run.status]}. Polling safely.`
                 : state.run

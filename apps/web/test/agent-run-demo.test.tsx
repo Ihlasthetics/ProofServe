@@ -290,6 +290,65 @@ it.each([
   },
 );
 
+it('stops polling only for the authoritative missing-run response', async () => {
+  const authoritative = setup();
+  authoritative.fetcher
+    .mockResolvedValueOnce(json(agentRun(), 202))
+    .mockResolvedValueOnce(
+      json(
+        {
+          error: {
+            code: 'RUN_NOT_FOUND',
+            message: 'Agent run not found.',
+          },
+        },
+        404,
+      ),
+    );
+  await authoritative.session.start(agentTask, access);
+  await authoritative.session.refresh();
+  expect(authoritative.session.getSnapshot().pollingPermanentlyStopped).toBe(
+    true,
+  );
+  expect(authoritative.view()).toContain('authoritatively reports');
+  expect(authoritative.view()).toContain('do not start another paid run');
+  await authoritative.session.refresh();
+  expect(authoritative.fetcher).toHaveBeenCalledTimes(2);
+
+  for (const response of [
+    json({}, 404),
+    json(
+      {
+        error: {
+          code: 'RUN_NOT_FOUND',
+          message: 'A noncanonical missing-run message.',
+        },
+      },
+      404,
+    ),
+    json(
+      {
+        error: {
+          code: 'INTERNAL_ERROR',
+          message: 'Agent run not found.',
+        },
+      },
+      404,
+    ),
+  ]) {
+    const ambiguous = setup();
+    ambiguous.fetcher
+      .mockResolvedValueOnce(json(agentRun(), 202))
+      .mockResolvedValueOnce(response);
+    await ambiguous.session.start(agentTask, access);
+    await ambiguous.session.refresh();
+    expect(ambiguous.session.getSnapshot().pollingPermanentlyStopped).toBe(
+      false,
+    );
+    expect(ambiguous.session.canPoll()).toBe(true);
+  }
+});
+
 it('uses bounded backoff only for transient polling failures', async () => {
   const { fetcher, session } = setup();
   fetcher

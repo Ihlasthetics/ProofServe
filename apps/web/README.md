@@ -19,6 +19,10 @@ Configure these server-only variables in the Web deployment:
   It must differ from both tokens above and must never use a `NEXT_PUBLIC_`
   prefix. Rotating it immediately invalidates outstanding run sessions.
 
+All three agent-run secrets must be pairwise distinct. This Web README covers
+the Web-owned configuration only; the central deployment documentation must be
+updated separately by its owner before I05 is merged.
+
 Serve the Web app over HTTPS. Rotate the demo access code if it is disclosed;
 holders can start server-funded testnet runs. Apply deployment-level request
 rate limits appropriate for the available testnet balance.
@@ -36,7 +40,9 @@ Creation is never automatically retried because an unavailable response can
 still mean the server accepted and paid the run. Transient status failures use
 bounded backoff; an authorization or run-session failure permanently stops local
 automatic polling so cookie expiry or cross-tab rotation cannot create a request
-loop. The route accepts only `POST /api/agent/runs` and
+loop. A controlled `404 RUN_NOT_FOUND` response also stops polling; ambiguous
+404s and transient or malformed responses remain retryable. The route accepts
+only `POST /api/agent/runs` and
 `GET /api/agent/runs/:runId`, validates bounded JSON against the shared schemas,
 binds responses to the request, strips upstream headers and diagnostics, and
 returns `Cache-Control: no-store`.
