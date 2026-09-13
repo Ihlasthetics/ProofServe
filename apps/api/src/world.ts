@@ -134,8 +134,11 @@ export interface WorldClientDependencies {
   timeoutMs?: number;
 }
 
-function providerSignal(providerId: Identifier): string {
-  return `proofserve:provider:${providerId}`;
+function providerSignal(
+  providerId: Identifier,
+  canonicalRequestNonce: string,
+): string {
+  return `proofserve:provider:${providerId}:nonce:${canonicalRequestNonce}`;
 }
 
 export function canonicalizeWorldFieldElement(value: string): string {
@@ -347,10 +350,13 @@ export function createWorldVerificationClient(
           action: configuration.action,
           ttl: RP_SIGNATURE_TTL_SECONDS,
         });
+        const canonicalRequestNonce = canonicalizeWorldRequestNonce(
+          signature.nonce,
+        );
         return WorldVerificationContextResponseSchema.parse({
           app_id: configuration.appId,
           action: configuration.action,
-          signal: providerSignal(providerId),
+          signal: providerSignal(providerId, canonicalRequestNonce),
           environment: configuration.idkitEnvironment,
           rp_context: {
             rp_id: configuration.rpId,
@@ -372,8 +378,11 @@ export function createWorldVerificationClient(
       let submittedSignalHash: string;
       let submittedNullifier: string;
       try {
+        const canonicalRequestNonce = canonicalizeWorldRequestNonce(
+          validatedResult.nonce,
+        );
         expectedSignalHash = canonicalizeWorldFieldElement(
-          hashSignal(providerSignal(providerId)),
+          hashSignal(providerSignal(providerId, canonicalRequestNonce)),
         );
         submittedSignalHash = canonicalizeWorldFieldElement(
           validatedResult.responses[0].signal_hash,

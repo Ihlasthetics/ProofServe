@@ -51,7 +51,7 @@ function safeError(value: unknown) {
 }
 
 describe('World verification same-origin proxy', () => {
-  it('proxies only the fixed context operation without forwarding browser headers', async () => {
+  it('proxies only canonical nonce-bound context without forwarding browser headers', async () => {
     const fetch = vi.fn(
       async (_input: string | URL | Request, _init?: RequestInit) => {
         void _input;
@@ -183,11 +183,33 @@ describe('World verification same-origin proxy', () => {
 
   it.each([
     [
-      'context binding mismatch',
+      'provider-only context signal',
       () =>
         jsonResponse({
           ...fictionalWorldContext,
-          signal: 'proofserve:provider:different_fictional_provider',
+          signal: `proofserve:provider:${fictionalProviderId}`,
+        }),
+    ],
+    [
+      'wrong-provider context signal',
+      () =>
+        jsonResponse({
+          ...fictionalWorldContext,
+          signal: fictionalWorldContext.signal.replace(
+            fictionalProviderId,
+            'different_fictional_provider',
+          ),
+        }),
+    ],
+    [
+      'context nonce and signal mismatch',
+      () =>
+        jsonResponse({
+          ...fictionalWorldContext,
+          rp_context: {
+            ...fictionalWorldContext.rp_context,
+            nonce: `0x${'99'.repeat(32)}`,
+          },
         }),
     ],
     [

@@ -54,7 +54,12 @@ signed RP contexts with provider binding, signed expiration, and one-time
 consumption state. Each context captures its server issuance time and the provider
 verification epoch under a provider lock. After expiry, the same provider can renew with its stable
 nullifier only through a successfully verified, unexpired context issued for that
-provider after that expiry. Pre-verification spare contexts and contexts issued
+provider after that expiry. Each legacy World 3.0 proof is bound to its request by
+using the canonical signed-context nonce in the provider signal as
+`proofserve:provider:<providerId>:nonce:<canonicalNonce>` and verifying the
+official SDK signal hash before contacting World. This closes renewal with an old
+proof and a freshly issued nonce; changing the submitted signal hash still leaves
+the old proof cryptographically bound to its original signal. Pre-verification spare contexts and contexts issued
 during a verification race become stale when the epoch changes. Unissued,
 mismatched, stale-epoch, expired, consumed, and cross-provider claims remain
 rejected across restarts. Context consumption, nullifier ownership, and verification
@@ -90,9 +95,17 @@ migration cannot be recovered by this patch.
 
 ## Local validation
 
-- API focused suite: 322 tests passed; the 11 opt-in PostgreSQL tests were skipped
-  in this ordinary run.
-- PostgreSQL integration: all 11 tests passed against a disposable loopback-only
+- Nonce-binding focused suites: all 98 affected API World tests and all 43
+  affected web World tests passed. The controlled upstream boundary maps fixed
+  proof fixtures to their expected signal hashes so relabeling old proof bytes
+  with a new signal is rejected. These are local boundary simulations, not
+  evidence of real World cryptographic verification; no World service was
+  contacted.
+- Full validation passed formatting, lint, typechecking, all builds, and 1,014
+  ordinary tests: agent 223, API 325, service 87, web 248, and shared 131. The 11
+  opt-in PostgreSQL tests were skipped because no loopback test URL was available.
+- In the earlier durable-registry validation, all 11 PostgreSQL integration tests
+  passed against a disposable loopback-only
   PostgreSQL 16.15 cluster, matching the production major version. The test applied
   migration 002 twice and covered issued-context persistence, unissued, mismatched,
   expired, consumed and concurrently submitted contexts, restart between issuance

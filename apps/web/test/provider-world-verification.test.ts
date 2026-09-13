@@ -24,7 +24,7 @@ const providerInput = {
 };
 const contextForCreatedProvider = {
   ...fictionalWorldContext,
-  signal: `proofserve:provider:${unverifiedProviderFixture.id}`,
+  signal: `proofserve:provider:${unverifiedProviderFixture.id}:nonce:${fictionalWorldContext.rp_context.nonce.toLowerCase()}`,
 };
 const verifiedRecordForCreatedProvider: WorldVerificationResponse =
   WorldVerificationResponseSchema.parse({

@@ -66,7 +66,9 @@ function worldRequest(
     responses: [
       {
         identifier: 'selfie',
-        signal_hash: hashSignal(`proofserve:provider:${providerId}`),
+        signal_hash: hashSignal(
+          `proofserve:provider:${providerId}:nonce:${nonce.toLowerCase()}`,
+        ),
         proof: `0x${'66'.repeat(256)}`,
         merkle_root: `0x${'77'.repeat(32)}`,
         nullifier,
@@ -153,14 +155,15 @@ describe.skipIf(!configuredUrl)('PostgreSQL agent run integration', () => {
       createRequest(providerId) {
         requestSequence += 1;
         const createdAt = Math.floor(Date.parse(contextClock.now) / 1_000);
+        const nonce = `0x${requestSequence.toString(16).padStart(64, '0')}`;
         return WorldVerificationContextResponseSchema.parse({
           app_id: 'app_sandbox_00000000000000000000000000000000',
           action: 'proofserve-provider-verification',
-          signal: `proofserve:provider:${providerId}`,
+          signal: `proofserve:provider:${providerId}:nonce:${nonce}`,
           environment: 'sandbox',
           rp_context: {
             rp_id: 'rp_00000000000000000000000000000000',
-            nonce: `0x${requestSequence.toString(16).padStart(64, '0')}`,
+            nonce,
             created_at: createdAt,
             expires_at: createdAt + 300,
             signature: `0x${'88'.repeat(65)}`,
@@ -675,14 +678,15 @@ describe.skipIf(!configuredUrl)('PostgreSQL agent run integration', () => {
       createRequest(providerId) {
         requestSequence += 1;
         const createdAt = Math.floor(Date.parse(clock.now) / 1_000);
+        const nonce = `0x${requestSequence.toString(16).padStart(64, '0')}`;
         return WorldVerificationContextResponseSchema.parse({
           app_id: 'app_sandbox_00000000000000000000000000000000',
           action: 'proofserve-provider-verification',
-          signal: `proofserve:provider:${providerId}`,
+          signal: `proofserve:provider:${providerId}:nonce:${nonce}`,
           environment: 'sandbox',
           rp_context: {
             rp_id: 'rp_00000000000000000000000000000000',
-            nonce: `0x${requestSequence.toString(16).padStart(64, '0')}`,
+            nonce,
             created_at: createdAt,
             expires_at: createdAt + 300,
             signature: `0x${'99'.repeat(65)}`,

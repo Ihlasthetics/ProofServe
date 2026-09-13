@@ -71,7 +71,9 @@ function worldResult(
     responses: [
       {
         identifier: 'selfie',
-        signal_hash: hashSignal(`proofserve:provider:${providerId}`),
+        signal_hash: hashSignal(
+          `proofserve:provider:${providerId}:nonce:${nonce.toLowerCase()}`,
+        ),
         proof: `0x${'22'.repeat(256)}`,
         merkle_root: `0x${'33'.repeat(32)}`,
         nullifier,
@@ -89,16 +91,17 @@ function fakeWorld(freshnessSeconds = 60): WorldVerificationClient {
     createRequest(providerId) {
       requestSequence += 1;
       const createdAt = Math.floor(Date.parse(initialTime) / 1_000);
+      const nonce = `0x${createHash('sha256')
+        .update(`${providerId}:${requestSequence}`)
+        .digest('hex')}`;
       return WorldVerificationContextResponseSchema.parse({
         app_id: 'app_sandbox_00000000000000000000000000000000',
         action,
-        signal: `proofserve:provider:${providerId}`,
+        signal: `proofserve:provider:${providerId}:nonce:${nonce}`,
         environment,
         rp_context: {
           rp_id: 'rp_00000000000000000000000000000000',
-          nonce: `0x${createHash('sha256')
-            .update(`${providerId}:${requestSequence}`)
-            .digest('hex')}`,
+          nonce,
           created_at: createdAt,
           expires_at: createdAt + 300,
           signature: `0x${'55'.repeat(65)}`,
@@ -187,7 +190,9 @@ describe('World RP context and verification routes', () => {
     const context = WorldVerificationContextResponseSchema.parse(
       response.json(),
     );
-    expect(context.signal).toBe('proofserve:provider:provider_context');
+    expect(context.signal).toBe(
+      `proofserve:provider:provider_context:nonce:${context.rp_context.nonce}`,
+    );
     expect(context.allow_legacy_proofs).toBe(true);
     expect(context.require_user_presence).toBe(true);
     expect(createRequest).toHaveBeenCalledExactlyOnceWith('provider_context');
@@ -595,6 +600,203 @@ describe('World RP context and verification routes', () => {
 });
 
 describe('atomic replay protection', () => {
+  it('requires a newly bound proof before same-nullifier renewal', async () => {
+    const renewalProvider = provider('provider_nonce_bound_renewal');
+    const firstNonce = `0x${'81'.repeat(32)}`;
+    const renewalNonce = `0x${'82'.repeat(32)}`;
+    const firstProof = `0x${'83'.repeat(256)}`;
+    const renewalProof = `0x${'84'.repeat(256)}`;
+    const firstSignal = `proofserve:provider:${renewalProvider.id}:nonce:${firstNonce}`;
+    const renewalSignal = `proofserve:provider:${renewalProvider.id}:nonce:${renewalNonce}`;
+    const proofSignalBindings = new Map([
+      [firstProof, hashSignal(firstSignal)],
+      [renewalProof, hashSignal(renewalSignal)],
+    ]);
+    const signedAt = Math.floor(Date.parse(initialTime) / 1_000);
+    const sign = vi
+      .fn()
+      .mockReturnValueOnce({
+        sig: `0x${'85'.repeat(65)}`,
+        nonce: firstNonce,
+        createdAt: signedAt,
+        expiresAt: signedAt + 300,
+      })
+      .mockReturnValueOnce({
+        sig: `0x${'86'.repeat(65)}`,
+        nonce: renewalNonce,
+        createdAt: signedAt + 60,
+        expiresAt: signedAt + 360,
+      });
+    const fetch = vi.fn(async (_input: string, init: RequestInit) => {
+      const submitted = WorldVerificationRequestSchema.parse(
+        JSON.parse(String(init.body)),
+      );
+      const response = submitted.responses[0];
+      // This controlled boundary models proof-to-signal binding. It is not a
+      // substitute for World's real cryptographic verification.
+      if (proofSignalBindings.get(response.proof) !== response.signal_hash) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            code: 'all_verifications_failed',
+            detail: 'Fictional proof verification failed.',
+            results: [
+              {
+                identifier: 'selfie',
+                success: false,
+                code: 'invalid_proof',
+                detail: 'Fictional proof does not bind to the signal.',
+              },
+            ],
+          }),
+          {
+            status: 400,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          success: true,
+          protocol_version: '3.0',
+          results: [
+            {
+              identifier: 'selfie',
+              success: true,
+              nullifier: response.nullifier,
+            },
+          ],
+          action: submitted.action,
+          nullifier: response.nullifier,
+          created_at: initialTime,
+          environment: submitted.environment,
+          message: 'Verified by a controlled test boundary.',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const world = createWorldVerificationClient(
+      {
+        appId: 'app_sandbox_00000000000000000000000000000000',
+        rpId: 'rp_00000000000000000000000000000000',
+        signingKey: '87'.repeat(32),
+        action,
+        idkitEnvironment: environment,
+        freshnessSeconds: 60,
+      },
+      { sign, fetch },
+    );
+    const { app, repository, clock } = setup(world);
+    repository.createProvider(renewalProvider);
+
+    const issueContext = async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/providers/${renewalProvider.id}/verification/world/request`,
+        payload: {},
+      });
+      expect(response.statusCode).toBe(200);
+      return WorldVerificationContextResponseSchema.parse(response.json());
+    };
+    const resultFor = (
+      context: { signal: string; rp_context: { nonce: string } },
+      proof: string,
+    ) => {
+      const result = worldResult(
+        renewalProvider.id,
+        '0x0A',
+        context.rp_context.nonce,
+      );
+      return WorldVerificationRequestSchema.parse({
+        ...result,
+        responses: [
+          {
+            ...result.responses[0],
+            signal_hash: hashSignal(context.signal),
+            proof,
+          },
+        ],
+      });
+    };
+
+    const firstContext = await issueContext();
+    const oldResult = resultFor(firstContext, firstProof);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `/api/providers/${renewalProvider.id}/verification/world`,
+          payload: oldResult,
+        })
+      ).statusCode,
+    ).toBe(200);
+    const firstVerification = repository.getProvider(
+      renewalProvider.id,
+    )?.verification;
+
+    clock.now = '2026-09-10T12:01:00.000Z';
+    const renewalContext = await issueContext();
+    expect(renewalContext.signal).toBe(renewalSignal);
+    expect(renewalContext.signal).not.toBe(firstContext.signal);
+
+    const oldProofWithFreshNonce = WorldVerificationRequestSchema.parse({
+      ...oldResult,
+      nonce: renewalContext.rp_context.nonce,
+    });
+    expectError(
+      await app.inject({
+        method: 'POST',
+        url: `/api/providers/${renewalProvider.id}/verification/world`,
+        payload: oldProofWithFreshNonce,
+      }),
+      400,
+      'WORLD_PROOF_INVALID',
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(repository.getProvider(renewalProvider.id)?.verification).toEqual(
+      firstVerification,
+    );
+
+    const relabeledOldProof = WorldVerificationRequestSchema.parse({
+      ...oldProofWithFreshNonce,
+      responses: [
+        {
+          ...oldProofWithFreshNonce.responses[0],
+          signal_hash: hashSignal(renewalContext.signal),
+        },
+      ],
+    });
+    expectError(
+      await app.inject({
+        method: 'POST',
+        url: `/api/providers/${renewalProvider.id}/verification/world`,
+        payload: relabeledOldProof,
+      }),
+      400,
+      'WORLD_PROOF_INVALID',
+    );
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(repository.getProvider(renewalProvider.id)?.verification).toEqual(
+      firstVerification,
+    );
+
+    const freshResult = resultFor(renewalContext, renewalProof);
+    const renewal = await app.inject({
+      method: 'POST',
+      url: `/api/providers/${renewalProvider.id}/verification/world`,
+      payload: freshResult,
+    });
+    expect(renewal.statusCode).toBe(200);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(repository.getProvider(renewalProvider.id)?.verification).toEqual({
+      providerId: renewalProvider.id,
+      method: 'WORLD_SELFIE_CHECK',
+      status: 'VERIFIED',
+      verifiedAt: clock.now,
+      expiresAt: '2026-09-10T12:02:00.000Z',
+    });
+  });
+
   it('allows a fresh same-nullifier renewal after expiry and rejects the old request', async () => {
     const world = fakeWorld(60);
     const verify = vi.spyOn(world, 'verify');
