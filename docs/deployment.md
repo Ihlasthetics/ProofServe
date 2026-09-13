@@ -1,18 +1,29 @@
-# Y06 public deployment handoff
+# ProofServe deployment and version handoff
 
-Pending T05 repair: [registry durability fix](bazantic-t05-discovery-fix.md)
-requires migration 002_registry before a paired Web/API rollout. Build and deploy
-both applications from the same final merged commit during one maintenance
-window. The recorded deployment below predates that repair; its in-memory restart
-limitation remains applicable until the new code and migration are deployed under
-separate approval.
+The live demo is reproduced by the public source branch
+`release/hedera-world-demo`. Its deployed versions are intentionally split:
 
-Status: Y06 public deployment and backend G4 completed on 2026-09-12 from
-`4580b20c67135fd857389c919972112235961f44` on
-`chore/y06-public-deployment-final`. I04 is merged and its World verification
-proxy requirements are incorporated below. I05 is still pending, so the final
-browser execution-timeline demonstration remains outstanding. T05 remains
-outside this pass.
+- Web: `a6abcdd8ffea270097b2789cc4405655f67000ac`, including the I05 browser
+  execution timeline and its server-only boundary.
+- API and protected triage:
+  `4580b20c67135fd857389c919972112235961f44`, the Y06/I04 deployment source.
+
+The API, buyer-agent, shared, and service trees on the public demo branch are
+unchanged from the API/triage commit. This recorded deployment is not the latest
+`main`. PR 23's [registry durability fix](bazantic-t05-discovery-fix.md), including
+nonce-bound World contexts and migration `002_registry`, is merged into `main`
+but is not deployed. Production migration 002 was absent at the latest recorded
+check on 2026-09-13. The live API therefore retains its process-memory registry
+limitation.
+
+Do not deploy the `main` Web alone against the older live API. The nonce-bound
+contract requires migration 002 and a paired, matching Web/API rollout during one
+maintenance window under separate authorization. Bazantic T05 remains incomplete
+and outside this submission's scope.
+
+Status: Y06 public deployment and backend G4 completed on 2026-09-12. I05 is
+deployed on the Web and its browser path was exercised on 2026-09-13; the recorded
+browser run paid but failed during service execution, as documented below.
 
 ## Processes and commands
 
@@ -44,15 +55,14 @@ as a payment-capable operation, never as a health check.
 
 The completed deployment uses Render Free for the hackathon demonstration:
 three Node Web Services (Web, API including the buyer agent, and protected
-triage) plus one free Render PostgreSQL database. All three services were
-deployed from commit `4580b20c67135fd857389c919972112235961f44`.
+triage) plus one free Render PostgreSQL database.
 
-| Service         | Public URL                                           | Recorded check                                                    |
-| --------------- | ---------------------------------------------------- | ----------------------------------------------------------------- |
-| Web             | https://proofserve-y06-web.onrender.com              | Public deployment recorded                                        |
-| API             | https://proofserve-y06-api.onrender.com              | `/health` returned HTTP 200                                       |
-| Triage          | https://proofserve-y06-triage.onrender.com           | `/health` returned HTTP 200                                       |
-| Triage endpoint | https://proofserve-y06-triage.onrender.com/v1/triage | Unpaid request returned HTTP 402 with a `Payment-Required` header |
+| Service         | Public URL                                           | Deployed source                                     | Recorded check                                                    |
+| --------------- | ---------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------------------- |
+| Web             | https://proofserve-y06-web.onrender.com              | `a6abcdd8ffea270097b2789cc4405655f67000ac`          | Public deployment and I05 browser path recorded                   |
+| API             | https://proofserve-y06-api.onrender.com              | `4580b20c67135fd857389c919972112235961f44`          | `/health` returned HTTP 200                                       |
+| Triage          | https://proofserve-y06-triage.onrender.com           | `4580b20c67135fd857389c919972112235961f44`          | `/health` returned HTTP 200                                       |
+| Triage endpoint | https://proofserve-y06-triage.onrender.com/v1/triage | `4580b20c67135fd857389c919972112235961f44`          | Unpaid request returned HTTP 402 with a `Payment-Required` header |
 
 The PostgreSQL migration `apps/api/migrations/001_agent_runs.sql` was applied
 successfully. Auto-deploy remained disabled for all three services, and the API
@@ -113,6 +123,24 @@ The active service advertised a price of exactly 1 tinybar, receiver
 https://proofserve-y06-triage.onrender.com/v1/triage, matching the public triage
 endpoint.
 
+## 2026-09-13 World-gated browser evidence
+
+An attempted activation while the provider was unverified was blocked. Genuine
+World verification then succeeded, after which the service was explicitly
+activated and discovered. Verification did not activate it automatically.
+
+| Record   | ID                                     |
+| -------- | -------------------------------------- |
+| Provider | `3153fa2c-d86b-4f33-b214-8b03f71accbe` |
+| Service  | `5e58802c-50a7-4abc-9584-2c57201c8033` |
+
+Browser run `191bea42-eb4e-461d-b3ef-831821c533ee` settled exactly 1 tinybar in
+transaction `0.0.7162784@1789312272.544961517`, then ended `FAILED` with
+`SERVICE_EXECUTION_FAILED`. This is evidence that the browser path reached real
+settlement, not evidence of a successful AI result. Failure after settlement does
+not imply a refund or authorize repeating the payment. A subsequent authorized
+attempt is pending; no outcome or video URL is recorded here.
+
 ## Backend G4 evidence
 
 ### First safe failed run
@@ -172,21 +200,31 @@ Enter real values only in the provider's per-service environment/secret settings
 Do not copy the entire root `.env.example` into every service. No application
 loads that file automatically. The tables list names and purpose, not credentials.
 
-| Web variable            | Requirement                                                                                                                                  |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `REGISTRY_API_ORIGIN`   | Required for deployment; server-only public API HTTPS origin, with no path, query, or credentials.                                           |
-| `PROOFSERVE_API_ORIGIN` | Required for deployment; the same server-only public API HTTPS origin, with no path, query, or credentials, for World verification proxying. |
-| `PORT`                  | Host-supplied listening port for Next.js.                                                                                                    |
-| `NODE_ENV`              | Production runtime mode.                                                                                                                     |
+| Web variable                  | Requirement                                                                                                                                                          |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `REGISTRY_API_ORIGIN`         | Required for deployment; server-only public API HTTPS origin, with no path, query, or credentials.                                                                   |
+| `PROOFSERVE_API_ORIGIN`       | Required for deployment; the same server-only public API HTTPS origin, with no path, query, or credentials, for World verification proxying.                         |
+| `AGENT_RUN_API_ORIGIN`        | Set to the same server-only public API HTTPS origin for the I05 run proxy. Source falls back to `REGISTRY_API_ORIGIN`, but deployment should configure it explicitly. |
+| `AGENT_RUN_API_TOKEN`         | Same 32–512 character, whitespace-free bearer token configured on the API; server-only and never exposed to the browser.                                            |
+| `AGENT_RUN_WEB_ACCESS_TOKEN`  | Separate 16–256 character demo access code validated by the Web boundary; authorized users enter it, but it must not be built into browser code.                      |
+| `AGENT_RUN_CAPABILITY_SECRET` | Dedicated 32–512 character, whitespace-free server secret for short-lived, run-specific browser session cookies.                                                    |
+| `PORT`                        | Host-supplied listening port for Next.js.                                                                                                                            |
+| `NODE_ENV`                    | Production runtime mode.                                                                                                                                             |
 
 The browser calls same-origin `/api` routes. The registry boundary forwards its
-implemented registry routes to `REGISTRY_API_ORIGIN`, and the merged I04 World
-proxy forwards verification requests to `PROOFSERVE_API_ORIGIN`. Set both to
-`<public API HTTPS origin>`. They are server-only: neither may use a
+implemented registry routes to `REGISTRY_API_ORIGIN`, the I04 World proxy uses
+`PROOFSERVE_API_ORIGIN`, and the I05 run boundary uses `AGENT_RUN_API_ORIGIN`.
+Set all three to `<public API HTTPS origin>`. They are server-only: none may use a
 `NEXT_PUBLIC_*` name or reach browser bundles. No browser API-origin variable or
-CORS change is required. I05 agent-run Web integration is still pending; never
-expose the run token to make that flow work. The Web needs none of the API/service
-secrets below.
+CORS change is required.
+
+The I05 API token must match the API's `AGENT_RUN_API_TOKEN`. The Web access token
+and capability secret must be pairwise distinct from it and from one another.
+Never expose the API token or capability secret to demo users; never reuse a
+Hedera, World, database, registry, or Gemini credential as the access code. The
+Web needs none of the payer private key, World RP signing key, database URL, or
+Gemini credential below. Serve it over HTTPS and apply deployment-level access
+restrictions or rate limits appropriate for a route that can start funded runs.
 
 | API variable                           | Requirement                                                                                        |
 | -------------------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -227,7 +265,36 @@ Never put the run token, signing keys, or Gemini credential in `NEXT_PUBLIC_*`,
 Next config, browser props or shared environment groups. Do not log proof/request
 bodies, authorization headers, database connection strings or private keys.
 
-## Database upgrade and readiness
+## Live migration-001 API readiness and restart gate
+
+The deployed API source uses `apps/api/migrations/001_agent_runs.sql`; it does not
+use migration 002. Schema creation is not automatic. For an initial deployment to
+a new, approved database, the database operator applies migration 001 with
+credentials supplied securely through libpq settings, not in the command:
+
+```sh
+psql -X --set=ON_ERROR_STOP=1 --single-transaction --file=apps/api/migrations/001_agent_runs.sql
+```
+
+Before configuring funded payer credentials or starting the API against that new
+database, run the migration-001 read-only inspection in the next section. Require
+zero run rows, zero payment-tombstone rows, and zero nonterminal rows. A nonempty
+database is not an initial-deployment database even when every run is terminal.
+
+Before every later start, restart, cold start, or wake of the unchanged live API,
+stop new run submissions, let active runs finish, and run the same inspection.
+Starting is allowed only after the gate returns zero nonterminal rows. If it lists
+a run, do not start the API merely to inspect or recover it; recovery requires a
+separate payment-owner procedure and authorization. Never delete or reset a run,
+permanent payment tombstone, transaction ID, or receipt to make the gate pass.
+
+The deployed API performs its migration-001 repository readiness check before
+listening, but startup and wake remain payment-capable because reconciliation may
+resume after the listener opens. The health endpoint is process liveness, not a
+side-effect-free readiness probe. Use exactly one API instance and keep automatic
+deploys, autoscaling, uptime pings, and other automatic wake traffic disabled.
+
+## Main upgrade and migration-002 readiness
 
 Schema creation is **not automatic**. This upgrade has two separate safety gates.
 Run the pre-upgrade gate against the migration-001 database before backup or
@@ -258,7 +325,7 @@ least fifteen API connections plus operator and platform administration capacity
 For non-loopback hosts, source enforces verified TLS and accepts only absent
 `sslmode` or `verify-full`; never weaken certificate verification.
 
-### Pre-upgrade gate: migration-001 database
+### Pre-upgrade and live restart gate: migration-001 database
 
 Stop new run submissions and allow all active runs to finish. Run this exact
 read-only inspection through a secured operator psql session in the migration-001
@@ -461,24 +528,32 @@ them to repeat onboarding, verification, or a demonstration.
 
 Y06 public deployment and the backend G4 run are complete. The public URLs,
 onboarding result, payment evidence, model result, and final read-only database
-inspection are recorded above. The backend G4 evidence does not complete I05:
-the final browser execution-timeline demonstration remains outstanding until I05
-is implemented and accepted. Latest-head PostgreSQL validation has passed; live
-T05 acceptance remains pending. The historical G4 evidence above does not satisfy
-that live acceptance.
+inspection are recorded above. I05 is deployed from the separate Web source
+version, and the 2026-09-13 run records that its browser path reached settlement
+before a real `SERVICE_EXECUTION_FAILED` terminal outcome. That failed run is not
+a successful browser AI demonstration. A later authorized attempt remains pending,
+with no claimed outcome or video.
+
+Latest-`main` PostgreSQL validation has passed, but PR 23 and migration 002 are not
+live. Production migration 002 was absent at the latest recorded check on
+2026-09-13, and live T05 acceptance remains pending. The historical G4 evidence
+and the failed browser run do not satisfy that acceptance. Bazantic T05 is
+incomplete and outside this submission's scope.
 
 For every later manual deployment, restart, cold start, or wake:
 
 1. For a version-changing deployment, build matching Web and API versions from
    the same final merged commit. A plain restart, cold start, or wake of an
    unchanged version does not require a Web rebuild.
-2. Stop new run submissions, allow active runs to finish, and execute the
-   post-migration read-only and application readiness gates above.
-3. Start or wake the API only when the nonterminal result has zero rows. For a
-   version-changing deployment, keep World verification traffic blocked, deploy
-   Web and API in one maintenance window, and do not route that traffic until both
-   matching versions are running. Recovery of any listed run requires a separate
-   payment-owner procedure outside this deployment gate.
+2. Stop new run submissions and allow active runs to finish. For the unchanged
+   live migration-001 API, execute the pre-upgrade/live-restart read-only gate.
+   For the migration-002 rollout or a later updated-API restart, execute the
+   post-migration read-only and application readiness gates.
+3. Start or wake the API only when the applicable gate's nonterminal result has
+   zero rows. For a version-changing deployment, keep World verification traffic
+   blocked, deploy Web and API in one maintenance window, and do not route that
+   traffic until both matching versions are running. Recovery of any listed run
+   requires a separate payment-owner procedure outside this deployment gate.
 4. Keep exactly one API instance, automatic Web and API deployment disabled, and
    the API free of generic uptime pings or other automatic keep-awake traffic.
 5. Before exposing public write paths, resolve the still-open abuse-control
