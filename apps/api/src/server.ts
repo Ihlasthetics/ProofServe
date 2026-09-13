@@ -6,6 +6,7 @@ import {
 import { createApiApp, validateAgentRunApiToken } from './app.js';
 import { createAgentRunService } from './agent-runs.js';
 import { createPostgresAgentRunRepository } from './postgres-agent-run-repository.js';
+import { createPostgresRegistryRepository } from './postgres-registry-repository.js';
 import { createHederaSettlementReconciler } from './hedera-settlement-reconciler.js';
 import {
   createWorldVerificationClient,
@@ -46,6 +47,7 @@ export async function startServer(
     privateKey: environment.HEDERA_PAYER_PRIVATE_KEY,
   });
   const repository = createPostgresAgentRunRepository(databaseUrl);
+  const registryRepository = createPostgresRegistryRepository(databaseUrl);
   let agentRuns: ReturnType<typeof createAgentRunService>;
   try {
     agentRuns = createAgentRunService({
@@ -54,15 +56,17 @@ export async function startServer(
       settlementReconciler: createHederaSettlementReconciler(),
     });
     await repository.assertReady();
+    await registryRepository.assertReady();
   } catch {
     try {
-      await repository.close();
+      await Promise.all([repository.close(), registryRepository.close()]);
     } catch {
       // Startup remains failed without exposing database diagnostics.
     }
-    throw new Error('Agent run persistence unavailable');
+    throw new Error('API persistence unavailable');
   }
   const app = createApiApp({
+    repository: registryRepository,
     resolveEndpoint: (capability) =>
       capability === 'SUPPORT_TICKET_TRIAGE' ? endpoint : undefined,
     agentRuns,
@@ -84,7 +88,7 @@ export async function startServer(
     process.removeListener('SIGTERM', shutdown);
     process.removeListener('SIGINT', shutdown);
     clearInterval(reconciliation.timer);
-    await repository.close();
+    await Promise.all([repository.close(), registryRepository.close()]);
   });
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);

@@ -22,7 +22,7 @@ function controllerSignal() {
 }
 
 describe('same-origin World verification client', () => {
-  it('requests and strictly validates provider-bound context', async () => {
+  it('requests and strictly validates canonical nonce-bound context', async () => {
     const fetch = vi.fn(
       async (_input: string | URL | Request, _init?: RequestInit) => {
         void _input;
@@ -54,11 +54,33 @@ describe('same-origin World verification client', () => {
 
   it.each([
     [
-      'provider mismatch',
+      'provider-only signal',
       () =>
         jsonResponse({
           ...fictionalWorldContext,
-          signal: 'proofserve:provider:different_fictional_provider',
+          signal: `proofserve:provider:${fictionalProviderId}`,
+        }),
+    ],
+    [
+      'wrong-provider signal',
+      () =>
+        jsonResponse({
+          ...fictionalWorldContext,
+          signal: fictionalWorldContext.signal.replace(
+            fictionalProviderId,
+            'different_fictional_provider',
+          ),
+        }),
+    ],
+    [
+      'nonce and signal mismatch',
+      () =>
+        jsonResponse({
+          ...fictionalWorldContext,
+          rp_context: {
+            ...fictionalWorldContext.rp_context,
+            nonce: `0x${'99'.repeat(32)}`,
+          },
         }),
     ],
     [

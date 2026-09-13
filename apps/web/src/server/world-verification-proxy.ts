@@ -213,7 +213,8 @@ function validatedSuccess(
     const parsed = WorldVerificationContextResponseSchema.safeParse(value);
     if (
       !parsed.success ||
-      parsed.data.signal !== `proofserve:provider:${providerId}`
+      parsed.data.signal !==
+        `proofserve:provider:${providerId}:nonce:${parsed.data.rp_context.nonce.toLowerCase()}`
     ) {
       return undefined;
     }

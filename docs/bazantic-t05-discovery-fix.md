@@ -1,0 +1,149 @@
+# T05 discovery failure diagnosis
+
+Run `e11a63c7-12b9-4aed-b58f-1152db864055` was accepted with HTTP 202 at
+2026-09-12T23:27:11.712Z, entered DISCOVERING at 23:27:11.751Z, and failed at
+23:27:12.014Z with NO_ELIGIBLE_SERVICE. Its SUPPORT_TICKET_TRIAGE budget was
+1 tinybar on hedera:testnet / 0.0.0. Selection, payment requirements, receipt,
+and result were null. This is discovery failure, not payment failure.
+
+## All paths before SELECTED
+
+The buyer maps any selection exception to NO_ELIGIBLE_SERVICE. Selection rejects
+invalid task/time/candidate schemas, duplicate service IDs, or no qualifying
+candidate. Qualifying candidates must be ACTIVE, match capability/network/asset,
+have VERIFIED provider metadata with verifiedAt <= selection time < expiresAt,
+and cost no more than the budget. The registry can already have filtered every
+record: empty storage, inactive service, absent/mismatched provider, noncurrent
+verification, endpoint differing from trusted configuration, or query mismatch
+(including price above 1 tinybar). Malformed registry responses normally fail
+earlier as discovery errors and map to PAYMENT_FAILED, not this code.
+
+After choosing a candidate, but still before SELECTED, the buyer rejects an
+endpoint differing from its configured allowlist or a provider payout differing
+from the service payTo. It chooses the cheapest candidate deterministically;
+these final checks do not try another candidate. No evidence establishes that
+this latter behavior triggered the reported run.
+
+“Unchanged” refers to the later security snapshot comparison: service id,
+providerId, capability, endpoint, status, createdAt, all payment requirements;
+provider id, payoutAccount, createdAt, and all verification fields. Names,
+descriptions, and updatedAt are excluded. The comparison runs after SELECTED
+and the unpaid challenge, then around signing/submission. It cannot explain
+this run's pre-SELECTED timeline. The error text is shared by all these paths.
+
+## Confirmed defect and inferred trigger
+
+Production startup previously omitted the registry repository dependency, causing
+createRegistry to instantiate empty in-memory maps. Providers, services,
+verification, and process-local replay claims were lost across process restart;
+PostgreSQL retained only agent runs/payment evidence. The deployment handoff
+documents Render Free sleep/restart behavior and this exact limitation.
+
+A restart losing registry state is therefore a supported explanation, not a
+proven historical trigger. No discovery snapshot, restart log, verification
+expiry, or contemporaneous endpoint configuration was captured. Earlier G4
+evidence shows a matching 1-tinybar service; it does not prove that service was
+still present and verified at 23:27. Other conditions above remain possible.
+
+## Fix and deployment requirements
+
+Production now injects a PostgreSQL registry using the existing pg dependency
+and TLS policy. Migration 002_registry stores strict provider/service snapshots,
+permanent provider ownership of canonical World nullifiers, and server-issued
+signed RP contexts with provider binding, signed expiration, and one-time
+consumption state. Each context captures its server issuance time and the provider
+verification epoch under a provider lock. After expiry, the same provider can renew with its stable
+nullifier only through a successfully verified, unexpired context issued for that
+provider after that expiry. Each legacy World 3.0 proof is bound to its request by
+using the canonical signed-context nonce in the provider signal as
+`proofserve:provider:<providerId>:nonce:<canonicalNonce>` and verifying the
+official SDK signal hash before contacting World. This closes renewal with an old
+proof and a freshly issued nonce; changing the submitted signal hash still leaves
+the old proof cryptographically bound to its original signal. Pre-verification spare contexts and contexts issued
+during a verification race become stale when the epoch changes. Unissued,
+mismatched, stale-epoch, expired, consumed, and cross-provider claims remain
+rejected across restarts. Context consumption, nullifier ownership, and verification
+writes commit atomically; expiry and allowlist checks still run at discovery and in the buyer.
+Startup requires the migration, exact validated and enforced
+constraints, and the documented read/write privileges before listening or
+reconciliation. Idle registry-pool errors are handled without logging raw database
+diagnostics; the driver replaces the failed idle client or later work fails closed.
+No automatic migration, seed, renewal request, activation, or run retry exists.
+
+After human diff review and separate operational authorization:
+
+1. Run the migration-001-compatible pre-upgrade gate. It inspects only connection
+   capacity and existing run/payment tables and requires zero nonterminal runs.
+2. Back up the database, then apply `apps/api/migrations/002_registry.sql` after
+   migration 001 using the approved operator and documented caller-controlled
+   `psql --single-transaction` command.
+3. Grant the runtime role the documented registry permissions, reserve capacity
+   for both API pools, and complete the post-migration structural, privilege,
+   run/payment, and application-readiness gate before starting or routing traffic.
+4. From the exact same final merged commit, build both rollout artifacts with
+   `npm run build:api` and `npm run build:web`.
+5. Before exposing public write paths, resolve the abuse-control decision: either
+   apply effective access restrictions and/or rate limits, or obtain explicit
+   human acceptance of the remaining risk. This remains unresolved; neither
+   implemented controls nor approved risk acceptance are claimed here.
+6. During one maintenance window, keep World verification traffic blocked and
+   deploy matching Web and API versions. Do not admit that traffic until both
+   versions are running. Triage needs no redeployment for this signal change.
+7. Old in-memory records are not imported. If lost, perform fresh onboarding.
+   Old run receipts cannot authorize verification or restore replay history.
+8. Confirm that the server-issued, nonce-bound context passes through the Web
+   proxy to the API. Only then, and under separate operational authorization,
+   perform real World verification and explicit service activation.
+9. Only then consider a separately approved new Recipe run. FAILED runs remain
+   terminal and are not retried by this change.
+
+Permanent World nullifier ownership, replay/context rows, payment tombstones,
+runs, transaction IDs, and receipts must never be deleted, truncated, or reset to
+repeat onboarding, verification, or a demonstration.
+
+The existing deployment notes describe the old deployment until this fix is
+actually deployed. Keep Web/API auto-deploys and API uptime pings disabled, and
+retain the API startup payment-safety gate. Database persistence does not remove
+verification expiry or protect against database loss. Historical replay claims
+lost before migration cannot be recovered by this patch.
+
+## Local validation
+
+- Nonce-binding focused suites: all 98 affected API World tests and all 43
+  affected web World tests passed. The controlled upstream boundary maps fixed
+  proof fixtures to their expected signal hashes so relabeling old proof bytes
+  with a new signal is rejected. These are local boundary simulations, not
+  evidence of real World cryptographic verification; no World service was
+  contacted.
+- Full validation passed formatting, lint, typechecking, all builds, and 1,014
+  ordinary tests: agent 223, API 325, service 87, web 248, and shared 131. The 11
+  opt-in PostgreSQL tests were skipped because no loopback test URL was available.
+  Latest-head PostgreSQL validation passed all 11 opt-in integration tests against a disposable loopback-only PostgreSQL 16.15 cluster.
+- In the earlier durable-registry validation, all 11 PostgreSQL integration tests
+  passed against a disposable loopback-only
+  PostgreSQL 16.15 cluster, matching the production major version. The test applied
+  migration 002 twice and covered issued-context persistence, unissued, mismatched,
+  expired, consumed and concurrently submitted contexts, restart between issuance
+  and verification, verification-epoch binding with 60-second verification
+  freshness inside the 300-second context lifetime, racing and spare-context
+  rejection, secure same-nullifier renewal, exact old-request replay,
+  cross-provider nullifier rejection, an
+  incomplete table, forged and unvalidated CHECK constraints, a mis-mapped foreign
+  key, disabled enforcement triggers, restart persistence, concurrent replay,
+  database-level rollback, verification expiry, snapshot constraints, and
+  concurrent activation. The cluster was then stopped and deleted.
+- The declared `qrcode@1.5.4` dependency was restored with `npm ci`; neither
+  package manifests nor `package-lock.json` changed.
+- Final lint, typecheck, build, diff, and full validation results are recorded in
+  the human review report produced with this change.
+
+Live T05 acceptance also remains pending. It requires the paired rollout,
+nonce-bound Web proxy confirmation, separately authorized real World verification,
+and explicit activation described above. The historical tests and G4 evidence are
+preserved as historical evidence and do not satisfy this live acceptance.
+
+No live database query/mutation, deployment, service restart, payment request, or
+Recipe execution was performed. Local database mutations were confined to the
+authorized disposable PostgreSQL integration cluster. An
+initial GET discovery attempt was blocked by the local network sandbox; it was
+not retried after the deployment wake/reconciliation hazard was identified.

@@ -7,6 +7,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import {
   canonicalizeWorldFieldElement,
+  canonicalizeWorldRequestNonce,
   createWorldVerificationClient,
   readWorldConfiguration,
   WorldConfigurationError,
@@ -23,7 +24,10 @@ const configuration: WorldConfiguration = {
   freshnessSeconds: 86_400,
 };
 const providerId = 'provider_world_test';
-const providerSignal = `proofserve:provider:${providerId}`;
+const requestNonce = `0x${'22'.repeat(32)}`;
+function requestSignal(selectedProviderId: string, nonce: string): string {
+  return `proofserve:provider:${selectedProviderId}:nonce:${nonce.toLowerCase()}`;
+}
 const officialIntegrityBundle = {
   version: 1 as const,
   signature_format: 'android_keystore' as const,
@@ -35,14 +39,15 @@ const officialIntegrityBundle = {
 function worldResult(
   overrides: Partial<WorldVerificationRequest> = {},
 ): WorldVerificationRequest {
+  const nonce = overrides.nonce ?? requestNonce;
   return WorldVerificationRequestSchema.parse({
     protocol_version: '3.0',
-    nonce: `0x${'22'.repeat(32)}`,
+    nonce,
     action: configuration.action,
     responses: [
       {
         identifier: 'selfie',
-        signal_hash: hashSignal(providerSignal),
+        signal_hash: hashSignal(requestSignal(providerId, nonce)),
         proof: `0x${'33'.repeat(256)}`,
         merkle_root: `0x${'44'.repeat(32)}`,
         nullifier: '0x0A',
@@ -136,7 +141,7 @@ describe('World configuration and RP context', () => {
     expect(context).toEqual({
       app_id: configuration.appId,
       action: configuration.action,
-      signal: providerSignal,
+      signal: requestSignal(providerId, `0x${'66'.repeat(32)}`),
       environment: configuration.idkitEnvironment,
       rp_context: {
         rp_id: configuration.rpId,
@@ -149,6 +154,42 @@ describe('World configuration and RP context', () => {
       require_user_presence: true,
     });
     expect(JSON.stringify(context)).not.toContain(configuration.signingKey);
+  });
+
+  it('derives request-specific signals from the canonical signed nonce', () => {
+    const commonSignature = {
+      sig: `0x${'55'.repeat(65)}`,
+      createdAt: 1_789_034_400,
+      expiresAt: 1_789_034_700,
+    };
+    const sign = vi
+      .fn()
+      .mockReturnValueOnce({
+        ...commonSignature,
+        nonce: `0x${'AB'.repeat(32)}`,
+      })
+      .mockReturnValueOnce({
+        ...commonSignature,
+        nonce: `0x${'ab'.repeat(32)}`,
+      })
+      .mockReturnValueOnce({
+        ...commonSignature,
+        nonce: `0x${'cd'.repeat(32)}`,
+      });
+    const client = createWorldVerificationClient(configuration, { sign });
+
+    const uppercase = client.createRequest(providerId);
+    const lowercase = client.createRequest(providerId);
+    const different = client.createRequest(providerId);
+
+    expect(uppercase.signal).toBe(
+      requestSignal(providerId, uppercase.rp_context.nonce),
+    );
+    expect(lowercase.signal).toBe(uppercase.signal);
+    expect(different.signal).toBe(
+      requestSignal(providerId, different.rp_context.nonce),
+    );
+    expect(different.signal).not.toBe(uppercase.signal);
   });
 
   it('also supports production as an exact IDKit destination', async () => {
@@ -189,6 +230,17 @@ describe('World verification transport and response validation', () => {
     ).toThrow(WorldVerificationFailure);
   });
 
+  it('canonicalizes only an exact 32-byte World request nonce', () => {
+    expect(canonicalizeWorldRequestNonce(`0x${'AB'.repeat(32)}`)).toBe(
+      `0x${'ab'.repeat(32)}`,
+    );
+    for (const value of ['ab'.repeat(32), `0X${'ab'.repeat(32)}`, '0x01']) {
+      expect(() => canonicalizeWorldRequestNonce(value)).toThrow(
+        WorldVerificationFailure,
+      );
+    }
+  });
+
   it('forwards the complete validated IDKit result unchanged to the fixed RP URL', async () => {
     const result = worldResult({
       action_description: 'Fictional provider verification',
@@ -218,6 +270,15 @@ describe('World verification transport and response validation', () => {
       (JSON.parse(String(init?.body)) as WorldVerificationRequest)
         .integrity_bundle,
     ).toEqual(officialIntegrityBundle);
+  });
+
+  it('derives the same verification signal from equivalent nonce hex casing', async () => {
+    const result = worldResult({ nonce: `0x${'AB'.repeat(32)}` });
+    const fetch = vi.fn(async () => jsonResponse(successBody(result)));
+    const client = createWorldVerificationClient(configuration, { fetch });
+
+    await expect(client.verify(providerId, result)).resolves.toBe('10');
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('accepts every field in the current official uniqueness success shape', async () => {
@@ -270,7 +331,9 @@ describe('World verification transport and response validation', () => {
         responses: [
           {
             ...worldResult().responses[0],
-            signal_hash: hashSignal('proofserve:provider:different-provider'),
+            signal_hash: hashSignal(
+              requestSignal('different-provider', requestNonce),
+            ),
           },
         ],
       },

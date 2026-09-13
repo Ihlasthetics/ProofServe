@@ -164,6 +164,51 @@ function harness(
 }
 
 describe('Y05 agent run API', () => {
+  it('fails before selection without payment or reconciliation when discovery is empty', async () => {
+    const repository = new InMemoryAgentRunRepository();
+    const reconcile = vi.fn<SettlementReconciler['reconcile']>();
+    const h = harness(repository, { reconcile });
+    h.state.initial = [];
+    const task = structuredClone(agentTaskFixture);
+    task.input.ticket =
+      "Customer reports login failures after password reset. Error message: 'Invalid credentials'. Account created 6 months ago.";
+    task.budget.maxAmountAtomic = '1';
+    const response = await h.app.inject({
+      method: 'POST',
+      url: '/api/agent/runs',
+      payload: task,
+      headers: authorization,
+    });
+    expect(response.statusCode).toBe(202);
+    const created = AgentRunSchema.parse(response.json());
+    await h.service.executeRun(created.id);
+    await h.service.reconcile();
+    const failed = await h.service.getRun(created.id);
+    expect(failed.events.map((event) => event.status)).toEqual([
+      'CREATED',
+      'DISCOVERING',
+      'FAILED',
+    ]);
+    expect(failed).toMatchObject({
+      selectedServiceId: null,
+      paymentRequirements: null,
+      paymentReceipt: null,
+      result: null,
+      error: {
+        code: 'NO_ELIGIBLE_SERVICE',
+        message: 'No eligible unchanged service is available.',
+      },
+    });
+    expect(h.fetcher).toHaveBeenCalledTimes(1);
+    expect(h.sign).not.toHaveBeenCalled();
+    expect(h.state.settlements).toBe(0);
+    expect(repository.hasPaymentTombstone(created.id)).toBe(false);
+    expect(
+      await repository.getPaymentReconciliation(created.id),
+    ).toBeUndefined();
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+
   it('fails closed when production run persistence was not injected', async () => {
     const app = createApiApp({ agentRunApiToken: apiToken });
     apps.push(app);

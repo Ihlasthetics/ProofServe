@@ -24,6 +24,7 @@ it('copies providers on write and read, including nested verification', () => {
 it('copies service creates, reads, lists and updates, including nested prices', () => {
   const repository = new InMemoryRegistryRepository();
   const original = structuredClone(activeServiceFixture);
+  original.status = 'DRAFT';
   repository.createService(original);
   original.paymentRequirements.amountAtomic = '1';
   const retrieved = repository.getService(original.id);
@@ -34,17 +35,19 @@ it('copies service creates, reads, lists and updates, including nested prices', 
   if (!first) throw new Error('Missing listed service');
   first.paymentRequirements.amountAtomic = '2';
   listed.length = 0;
-  expect(repository.listServices()).toEqual([activeServiceFixture]);
+  expect(repository.listServices()).toEqual([
+    { ...activeServiceFixture, status: 'DRAFT' },
+  ]);
   const updated = ServiceListingSchema.parse({
     ...activeServiceFixture,
-    status: 'SUSPENDED',
   });
-  repository.updateService(updated);
+  expect(repository.updateService(updated)).toBe(true);
   updated.paymentRequirements.amountAtomic = '3';
-  expect(repository.getService(updated.id)).toEqual({
-    ...activeServiceFixture,
-    status: 'SUSPENDED',
-  });
+  expect(repository.getService(updated.id)).toEqual(activeServiceFixture);
+  expect(repository.updateService({ ...updated, status: 'SUSPENDED' })).toBe(
+    false,
+  );
+  expect(repository.getService(updated.id)).toEqual(activeServiceFixture);
 });
 
 it('refuses duplicate creates and updates of missing services without overwriting data', () => {

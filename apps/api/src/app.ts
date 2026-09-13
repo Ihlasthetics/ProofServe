@@ -173,7 +173,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
     { onRequest: rejectQueryParameters },
     async (request, reply) => {
       const body = requestData(CreateProviderRequestSchema, request.body);
-      return reply.code(201).send(registry.createProvider(body));
+      return reply.code(201).send(await registry.createProvider(body));
     },
   );
   app.get<{ Params: { providerId: string } }>(
@@ -213,7 +213,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
     { onRequest: rejectQueryParameters },
     async (request, reply) => {
       const body = requestData(CreateServiceRequestSchema, request.body);
-      return reply.code(201).send(registry.createService(body));
+      return reply.code(201).send(await registry.createService(body));
     },
   );
   app.post<{ Params: { serviceId: string } }>(

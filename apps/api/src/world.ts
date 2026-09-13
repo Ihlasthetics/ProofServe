@@ -25,6 +25,7 @@ const signingKeyPattern = /^(?:0x)?[0-9a-fA-F]{64}$/;
 const canonicalPositiveIntegerPattern = /^[1-9][0-9]*$/;
 const hexadecimalFieldElementPattern = /^0[xX][0-9a-fA-F]{1,64}$/;
 const decimalFieldElementPattern = /^[0-9]{1,78}$/;
+const requestNoncePattern = /^0x[0-9a-fA-F]{64}$/;
 const maximumFieldElement = (1n << 256n) - 1n;
 const dateTimePattern =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -133,8 +134,11 @@ export interface WorldClientDependencies {
   timeoutMs?: number;
 }
 
-function providerSignal(providerId: Identifier): string {
-  return `proofserve:provider:${providerId}`;
+function providerSignal(
+  providerId: Identifier,
+  canonicalRequestNonce: string,
+): string {
+  return `proofserve:provider:${providerId}:nonce:${canonicalRequestNonce}`;
 }
 
 export function canonicalizeWorldFieldElement(value: string): string {
@@ -148,6 +152,12 @@ export function canonicalizeWorldFieldElement(value: string): string {
   if (parsed > maximumFieldElement)
     throw new WorldVerificationFailure('WORLD_PROOF_INVALID');
   return parsed.toString(10);
+}
+
+export function canonicalizeWorldRequestNonce(value: string): string {
+  if (!requestNoncePattern.test(value))
+    throw new WorldVerificationFailure('WORLD_PROOF_INVALID');
+  return value.toLowerCase();
 }
 
 function hasOnlyKeys(
@@ -340,10 +350,13 @@ export function createWorldVerificationClient(
           action: configuration.action,
           ttl: RP_SIGNATURE_TTL_SECONDS,
         });
+        const canonicalRequestNonce = canonicalizeWorldRequestNonce(
+          signature.nonce,
+        );
         return WorldVerificationContextResponseSchema.parse({
           app_id: configuration.appId,
           action: configuration.action,
-          signal: providerSignal(providerId),
+          signal: providerSignal(providerId, canonicalRequestNonce),
           environment: configuration.idkitEnvironment,
           rp_context: {
             rp_id: configuration.rpId,
@@ -365,8 +378,11 @@ export function createWorldVerificationClient(
       let submittedSignalHash: string;
       let submittedNullifier: string;
       try {
+        const canonicalRequestNonce = canonicalizeWorldRequestNonce(
+          validatedResult.nonce,
+        );
         expectedSignalHash = canonicalizeWorldFieldElement(
-          hashSignal(providerSignal(providerId)),
+          hashSignal(providerSignal(providerId, canonicalRequestNonce)),
         );
         submittedSignalHash = canonicalizeWorldFieldElement(
           validatedResult.responses[0].signal_hash,

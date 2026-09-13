@@ -10,57 +10,175 @@ export type WorldVerificationCommitResult =
   | 'VERIFIED'
   | 'PROVIDER_NOT_FOUND'
   | 'PROVIDER_ALREADY_VERIFIED'
+  | 'WORLD_PROOF_INVALID'
   | 'WORLD_PROOF_REPLAYED';
 
+export interface WorldVerificationContextIssue {
+  canonicalRequestNonce: string;
+  providerId: Identifier;
+  issuedAt: string;
+  expiresAt: string;
+}
+
+export interface WorldVerificationEpoch {
+  verifiedAt: string | null;
+  expiresAt: string | null;
+}
+
+export interface IssuedWorldVerificationContext extends WorldVerificationContextIssue {
+  verificationEpoch: WorldVerificationEpoch;
+}
+
+export interface WorldVerificationReplayClaim {
+  canonicalNullifier: string;
+  canonicalRequestNonce: string;
+}
+
+export type WorldVerificationContextStatus =
+  'ISSUED' | 'WORLD_PROOF_INVALID' | 'WORLD_PROOF_REPLAYED';
+
+export type WorldVerificationContextIssueResult =
+  'ISSUED' | 'PROVIDER_NOT_FOUND' | 'PROVIDER_ALREADY_VERIFIED';
+
+function verificationEpoch(provider: Provider): WorldVerificationEpoch {
+  return provider.verification.status === 'UNVERIFIED'
+    ? { verifiedAt: null, expiresAt: null }
+    : {
+        verifiedAt: provider.verification.verifiedAt,
+        expiresAt: provider.verification.expiresAt,
+      };
+}
+
+function canIssueOrConsume(provider: Provider, now: string): boolean {
+  return (
+    provider.verification.status === 'UNVERIFIED' ||
+    now >= provider.verification.expiresAt
+  );
+}
+
 export interface WorldReplayStore {
-  has(canonicalReplayIdentifier: string): boolean;
-  /** Atomically reserve an identifier and run its synchronous state update. */
+  issue(context: IssuedWorldVerificationContext): void;
+  status(
+    providerId: Identifier,
+    canonicalRequestNonce: string,
+    now: string,
+    verificationEpoch: WorldVerificationEpoch,
+  ): WorldVerificationContextStatus;
+  /** Atomically bind a nullifier owner, reserve a request, and update state. */
   claimAndCommit(
-    canonicalReplayIdentifier: string,
+    providerId: Identifier,
+    claim: WorldVerificationReplayClaim,
+    now: string,
+    verificationEpoch: WorldVerificationEpoch,
     commit: () => void,
-  ): boolean;
+  ): WorldVerificationContextStatus;
 }
 
 export class InMemoryWorldReplayStore implements WorldReplayStore {
-  private readonly claimedIdentifiers = new Set<string>();
+  private readonly nullifierOwners = new Map<string, Identifier>();
+  private readonly contexts = new Map<
+    string,
+    IssuedWorldVerificationContext & {
+      consumedAt: string | null;
+      nullifier: string | null;
+    }
+  >();
 
-  has(canonicalReplayIdentifier: string): boolean {
-    return this.claimedIdentifiers.has(canonicalReplayIdentifier);
+  issue(context: IssuedWorldVerificationContext): void {
+    if (this.contexts.has(context.canonicalRequestNonce))
+      throw new Error('Duplicate World request nonce');
+    this.contexts.set(context.canonicalRequestNonce, {
+      ...structuredClone(context),
+      consumedAt: null,
+      nullifier: null,
+    });
+  }
+
+  status(
+    providerId: Identifier,
+    canonicalRequestNonce: string,
+    now: string,
+    currentEpoch: WorldVerificationEpoch,
+  ): WorldVerificationContextStatus {
+    const context = this.contexts.get(canonicalRequestNonce);
+    if (!context || context.providerId !== providerId)
+      return 'WORLD_PROOF_INVALID';
+    if (context.consumedAt !== null) return 'WORLD_PROOF_REPLAYED';
+    if (
+      context.verificationEpoch.verifiedAt !== currentEpoch.verifiedAt ||
+      context.verificationEpoch.expiresAt !== currentEpoch.expiresAt
+    )
+      return 'WORLD_PROOF_INVALID';
+    return now < context.expiresAt ? 'ISSUED' : 'WORLD_PROOF_INVALID';
   }
 
   claimAndCommit(
-    canonicalReplayIdentifier: string,
+    providerId: Identifier,
+    claim: WorldVerificationReplayClaim,
+    now: string,
+    currentEpoch: WorldVerificationEpoch,
     commit: () => void,
-  ): boolean {
-    if (this.claimedIdentifiers.has(canonicalReplayIdentifier)) return false;
-    this.claimedIdentifiers.add(canonicalReplayIdentifier);
+  ): WorldVerificationContextStatus {
+    const status = this.status(
+      providerId,
+      claim.canonicalRequestNonce,
+      now,
+      currentEpoch,
+    );
+    if (status !== 'ISSUED') return status;
+    const owner = this.nullifierOwners.get(claim.canonicalNullifier);
+    if (owner !== undefined && owner !== providerId)
+      return 'WORLD_PROOF_REPLAYED';
+    const context = this.contexts.get(claim.canonicalRequestNonce);
+    if (!context) return 'WORLD_PROOF_INVALID';
+    const createdOwner = owner === undefined;
+    if (createdOwner)
+      this.nullifierOwners.set(claim.canonicalNullifier, providerId);
+    context.consumedAt = now;
+    context.nullifier = claim.canonicalNullifier;
     try {
       commit();
-      return true;
+      return 'ISSUED';
     } catch (error) {
-      this.claimedIdentifiers.delete(canonicalReplayIdentifier);
+      context.consumedAt = null;
+      context.nullifier = null;
+      if (createdOwner) this.nullifierOwners.delete(claim.canonicalNullifier);
       throw error;
     }
   }
 }
 
-// Default repositories share replay claims for the lifetime of this Node process.
+// Default repositories share issued contexts and nullifier ownership per process.
 const processWorldReplayStore = new InMemoryWorldReplayStore();
 
-/** Synchronous storage for Y02; provider and service records remain per instance. */
+/** Registry storage; production is durable, while tests may use synchronous memory. */
 export interface RegistryRepository {
-  createProvider(provider: Provider): void;
-  getProvider(id: Identifier): Provider | undefined;
-  createService(service: ServiceListing): void;
-  getService(id: Identifier): ServiceListing | undefined;
+  createProvider(provider: Provider): void | Promise<void>;
+  getProvider(
+    id: Identifier,
+  ): Provider | undefined | Promise<Provider | undefined>;
+  createWorldVerificationContext(
+    context: WorldVerificationContextIssue,
+  ):
+    | WorldVerificationContextIssueResult
+    | Promise<WorldVerificationContextIssueResult>;
+  createService(service: ServiceListing): void | Promise<void>;
+  getService(
+    id: Identifier,
+  ): ServiceListing | undefined | Promise<ServiceListing | undefined>;
+  worldVerificationContextStatus(
+    providerId: Identifier,
+    canonicalRequestNonce: string,
+    now: string,
+  ): WorldVerificationContextStatus | Promise<WorldVerificationContextStatus>;
   commitWorldVerification(
     providerId: Identifier,
-    canonicalNullifier: string,
+    claim: WorldVerificationReplayClaim,
     verification: VerifiedVerificationRecord,
     now: string,
-  ): WorldVerificationCommitResult;
-  updateService(service: ServiceListing): void;
-  listServices(): ServiceListing[];
+  ): WorldVerificationCommitResult | Promise<WorldVerificationCommitResult>;
+  updateService(service: ServiceListing): boolean | Promise<boolean>;
+  listServices(): ServiceListing[] | Promise<ServiceListing[]>;
 }
 
 export class InMemoryRegistryRepository implements RegistryRepository {
@@ -81,37 +199,81 @@ export class InMemoryRegistryRepository implements RegistryRepository {
     return structuredClone(this.providers.get(id));
   }
 
+  createWorldVerificationContext(
+    context: WorldVerificationContextIssue,
+  ): WorldVerificationContextIssueResult {
+    if (!/^0x[0-9a-f]{64}$/.test(context.canonicalRequestNonce))
+      throw new Error('Invalid canonical World request nonce');
+    if (context.providerId.length === 0)
+      throw new Error('Invalid World request provider');
+    const provider = this.providers.get(context.providerId);
+    if (!provider) return 'PROVIDER_NOT_FOUND';
+    if (!canIssueOrConsume(provider, context.issuedAt))
+      return 'PROVIDER_ALREADY_VERIFIED';
+    this.worldReplayStore.issue({
+      ...context,
+      verificationEpoch: verificationEpoch(provider),
+    });
+    return 'ISSUED';
+  }
+
+  worldVerificationContextStatus(
+    providerId: Identifier,
+    canonicalRequestNonce: string,
+    now: string,
+  ): WorldVerificationContextStatus {
+    if (!/^0x[0-9a-f]{64}$/.test(canonicalRequestNonce))
+      throw new Error('Invalid canonical World request nonce');
+    const provider = this.providers.get(providerId);
+    if (!provider) return 'WORLD_PROOF_INVALID';
+    const status = this.worldReplayStore.status(
+      providerId,
+      canonicalRequestNonce,
+      now,
+      verificationEpoch(provider),
+    );
+    if (status !== 'ISSUED') return status;
+    return canIssueOrConsume(provider, now) ? 'ISSUED' : 'WORLD_PROOF_INVALID';
+  }
+
   commitWorldVerification(
     providerId: Identifier,
-    canonicalNullifier: string,
+    claim: WorldVerificationReplayClaim,
     verification: VerifiedVerificationRecord,
     now: string,
   ): WorldVerificationCommitResult {
     const provider = this.providers.get(providerId);
     if (!provider) return 'PROVIDER_NOT_FOUND';
-    if (!/^(0|[1-9][0-9]*)$/.test(canonicalNullifier))
+    if (!/^(0|[1-9][0-9]*)$/.test(claim.canonicalNullifier))
       throw new Error('Invalid canonical World nullifier');
-    if (this.worldReplayStore.has(canonicalNullifier))
-      return 'WORLD_PROOF_REPLAYED';
-    if (
-      provider.verification.status === 'VERIFIED' &&
-      provider.verification.verifiedAt <= now &&
-      now < provider.verification.expiresAt
-    ) {
-      return 'PROVIDER_ALREADY_VERIFIED';
-    }
-    const updated = ProviderSchema.parse({
-      ...provider,
-      verification,
-      updatedAt: now,
-    });
+    if (!/^0x[0-9a-f]{64}$/.test(claim.canonicalRequestNonce))
+      throw new Error('Invalid canonical World request nonce');
     const previous = structuredClone(provider);
+    const currentEpoch = verificationEpoch(provider);
+    const contextStatus = this.worldReplayStore.status(
+      providerId,
+      claim.canonicalRequestNonce,
+      now,
+      currentEpoch,
+    );
+    if (contextStatus !== 'ISSUED') return contextStatus;
+    if (!canIssueOrConsume(provider, now)) return 'WORLD_PROOF_INVALID';
     try {
       const claimed = this.worldReplayStore.claimAndCommit(
-        canonicalNullifier,
-        () => this.storeWorldVerifiedProvider(providerId, updated),
+        providerId,
+        claim,
+        now,
+        currentEpoch,
+        () => {
+          const updated = ProviderSchema.parse({
+            ...provider,
+            verification,
+            updatedAt: now,
+          });
+          this.storeWorldVerifiedProvider(providerId, updated);
+        },
       );
-      return claimed ? 'VERIFIED' : 'WORLD_PROOF_REPLAYED';
+      return claimed === 'ISSUED' ? 'VERIFIED' : claimed;
     } catch (error) {
       // Restore the provider even if an injected writer failed after a partial write.
       this.providers.set(providerId, previous);
@@ -135,9 +297,13 @@ export class InMemoryRegistryRepository implements RegistryRepository {
     return structuredClone(this.services.get(id));
   }
 
-  updateService(service: ServiceListing): void {
-    if (!this.services.has(service.id)) throw new Error('Missing service');
+  updateService(service: ServiceListing): boolean | Promise<boolean> {
+    const current = this.services.get(service.id);
+    if (!current) throw new Error('Missing service');
+    if (current.status !== 'DRAFT' || current.providerId !== service.providerId)
+      return false;
     this.services.set(service.id, structuredClone(service));
+    return true;
   }
 
   listServices(): ServiceListing[] {

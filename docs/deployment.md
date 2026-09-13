@@ -1,5 +1,12 @@
 # Y06 public deployment handoff
 
+Pending T05 repair: [registry durability fix](bazantic-t05-discovery-fix.md)
+requires migration 002_registry before a paired Web/API rollout. Build and deploy
+both applications from the same final merged commit during one maintenance
+window. The recorded deployment below predates that repair; its in-memory restart
+limitation remains applicable until the new code and migration are deployed under
+separate approval.
+
 Status: Y06 public deployment and backend G4 completed on 2026-09-12 from
 `4580b20c67135fd857389c919972112235961f44` on
 `chore/y06-public-deployment-final`. I04 is merged and its World verification
@@ -55,11 +62,11 @@ For each application, leave Root Directory unset so npm can access all workspace
 Use `npm ci --include=dev && npm run build:web` as the web build command, substituting
 `build:api` or `build:service` for the others; use the start commands above.
 Select a Node version matching the root engine constraint. Use one free instance
-for Web and triage, and exactly one API instance with no replicas. Keep API
-autoscaling and automatic deploys disabled. Configure Web and triage health checks
-as above. Configure or invoke API `/health` only after the database startup safety
-gate below has passed. Do not attach a generic uptime ping or other keep-awake
-monitor to the API. HTTPS URLs are assigned by the host.
+for Web and triage, and exactly one API instance with no replicas. Keep Web and
+API automatic deploys disabled, and keep API autoscaling disabled. Configure Web
+and triage health checks as above. Configure or invoke API `/health` only after the
+database startup safety gate below has passed. Do not attach a generic uptime ping
+or other keep-awake monitor to the API. HTTPS URLs are assigned by the host.
 
 Render Free Web Services sleep after 15 minutes idle and may restart. For the API,
 a sleep/wake cycle is a restart: a request to `/health` can wake the process and
@@ -74,9 +81,10 @@ demonstration during one active session. The free PostgreSQL database expires
 after 30 days. This arrangement is hackathon/demo hosting, not production
 durability.
 
-Automatic uptime pings remain prohibited. Automatic API deployment also remains
-prohibited: every API restart or deployment must pass the database safety gate
-documented below before the process is started or woken.
+Automatic uptime pings remain prohibited. Automatic Web and API deployments also
+remain prohibited so their versions can be coordinated: every API restart or
+deployment must pass the database safety gate documented below before the process
+is started or woken.
 
 Render supports [monorepos](https://render.com/docs/monorepo-support),
 [Node web services](https://render.com/docs/web-services), and
@@ -219,53 +227,53 @@ Never put the run token, signing keys, or Gemini credential in `NEXT_PUBLIC_*`,
 Next config, browser props or shared environment groups. Do not log proof/request
 bodies, authorization headers, database connection strings or private keys.
 
-## Database initialization and readiness
+## Database upgrade and readiness
 
-Schema creation is **not automatic**. Before starting the API, have the approved
-database operator apply `apps/api/migrations/001_agent_runs.sql` once to the same
-database and schema used by the runtime role. With libpq connection settings
-provided securely outside shell history, use:
-
-```sh
-psql -X --set=ON_ERROR_STOP=1 --single-transaction --file=apps/api/migrations/001_agent_runs.sql
-```
+Schema creation is **not automatic**. This upgrade has two separate safety gates.
+Run the pre-upgrade gate against the migration-001 database before backup or
+migration. Apply migration 002 only after that gate passes and the backup completes.
+Then run the post-migration gate before starting the updated API or routing traffic.
 
 Supply `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSFILE`, `PGSSLMODE` and,
-if required by the operator's trust setup, `PGSSLROOTCERT` securely to psql.
-Use full certificate verification. Never put a password/connection URI in the
-command or paste migration diagnostics containing credentials into this task.
-These are operator-side psql settings, not additional API environment variables.
+when required, `PGSSLROOTCERT` securely to psql. Use full certificate verification.
+Never put a password or connection URI in a command or paste database diagnostics
+containing credentials into the deployment record. These are operator-side libpq
+settings, not additional API environment variables.
 
-Use a currently supported PostgreSQL release. The schema requires JSONB,
-transactions, foreign keys, partial indexes and ordinary catalog access; no
-extension is required. No minimum server version is declared or integration-tested
-by this repository. The migration role needs schema/table/index creation rights;
-the API role needs schema usage, SELECT/INSERT/UPDATE on run/payment tables and
-SELECT on the migration table. Both must resolve the same schema/search path.
-Reserve capacity for the API pool's maximum ten connections plus administration.
+PostgreSQL 16 is the production major version and the complete integration suite
+is tested against PostgreSQL 16.15. The schema requires JSONB, transactions,
+foreign keys, partial indexes and ordinary catalog access; no extension is required.
+The migration role needs schema/table/index creation rights. The API role needs:
 
+- schema usage;
+- SELECT/INSERT/UPDATE on `agent_runs`, `agent_run_payment_tombstones`,
+  `registry_providers`, and `registry_services`;
+- SELECT/INSERT on `registry_world_nullifiers`, SELECT/INSERT/UPDATE on
+  `registry_world_replays`; and
+- SELECT on `proofserve_schema_migrations`.
+
+Both roles must resolve the same schema/search path. The API uses separate pools
+with maxima of ten agent-run connections and five registry connections. Reserve at
+least fifteen API connections plus operator and platform administration capacity.
 For non-loopback hosts, source enforces verified TLS and accepts only absent
-`sslmode` or `verify-full`; do not use `require`, disable verification, or add
-certificate override URL parameters. Provider TLS incompatibility is a blocker
-to report to Yhlas, not permission to weaken database security.
+`sslmode` or `verify-full`; never weaken certificate verification.
 
-Startup awaits `repository.assertReady()` before listening. It checks the migration
-marker, tables, required columns, keys and reconciliation index. Database connection
-timeout is ten seconds; there is no startup retry loop or automatic migration.
-Provision/migrate first, then start or retry the API after availability is restored.
-The health endpoint is process liveness, not a continuous database/dependency probe
-and not a side-effect-free startup probe.
+### Pre-upgrade gate: migration-001 database
 
-### Required pre-start database safety gate
-
-Run the following exact read-only inspection through a secured operator `psql`
-session against the same database and schema as the API. The first result counts
-the only run/payment tables created by the migration. The second uses the same
-durable nonterminal predicate and ordering as `listReconciliationRunIds()` while
-showing only safe operational metadata:
+Stop new run submissions and allow all active runs to finish. Run this exact
+read-only inspection through a secured operator psql session in the migration-001
+database and schema. It references only the existing run/payment tables and the
+PostgreSQL connection catalog; it does not query migration-002 registry tables.
 
 ```sql
+\set ON_ERROR_STOP on
 BEGIN TRANSACTION READ ONLY;
+
+SELECT
+  current_setting('max_connections')::integer AS max_connections,
+  count(*)::integer AS current_database_connections
+FROM pg_stat_activity
+WHERE datname = current_database();
 
 SELECT
   (SELECT count(*) FROM agent_runs) AS agent_run_count,
@@ -285,42 +293,169 @@ ORDER BY r.created_at, r.id;
 COMMIT;
 ```
 
-For any initial deployment to a newly migrated database, require
-`agent_run_count = 0`, `payment_tombstone_count = 0` and zero rows from the second
-result. Perform this check before configuring the funded payer credentials and
-before starting the API. A previously used or nonempty database does not satisfy
-the initial-deployment gate, even if all of its runs are terminal.
+The result must have zero nonterminal rows. Confirm that the configured database
+limit can reserve fifteen API connections in addition to observed, operator, and
+platform administration connections. If a table is absent, a query fails, capacity
+is insufficient, or any nonterminal row exists, stop before backup and migration.
+Do not start the API to inspect or recover a run, and never delete or reset run,
+payment tombstone, transaction, or receipt data.
 
-For every later manual deploy or restart, stop new run submissions, allow active
-runs to finish, then run the inspection before starting the replacement API. Funded
-startup is permitted only when the second result has zero rows or when a human
-payment owner explicitly authorizes startup recovery of the run IDs and states
-listed by that result. Run the inspection directly in the secured database session;
-never print task bodies, receipts, credentials, authorization tokens, proof
-material, private keys or raw transaction/payment fields in this query, its
-diagnostics or the deployment record.
+### Backup and migration 002
 
-If the second result contains any rows, do not start the API merely to perform a
-health check. Do not delete or reset runs, permanent payment tombstones,
-transaction IDs or receipts, and do not retry a payment manually. Startup may
-resume side effects, so explicit payment-owner approval for the listed runs is
-required before recovery.
+After the pre-upgrade gate passes, complete and verify the approved database backup.
+Then the approved migration operator applies migration 002 to the same database and
+schema. The file is repeatable, validates the complete schema, and relies on the
+caller's transaction:
+
+```sh
+psql -X --set=ON_ERROR_STOP=1 --single-transaction --file=apps/api/migrations/002_registry.sql
+```
+
+For a new empty database, apply migration 001 with the same command shape before
+migration 002. Do not run the post-migration queries until migration 002 commits.
+
+### Post-migration gate: before updated API startup
+
+First rerun the same migration-002 command as the migration operator. Its repeatable
+validation block proves the exact tables, columns, primary keys, validated CHECK
+definitions, foreign-key source/target columns and actions, and enabled enforcement
+triggers. Any incompatible or partial schema aborts the caller-controlled transaction.
+
+Next connect as the exact API runtime role with its production search path and run:
+
+```sql
+\set ON_ERROR_STOP on
+BEGIN TRANSACTION READ ONLY;
+
+SELECT
+  EXISTS (
+    SELECT 1 FROM proofserve_schema_migrations WHERE version = '002_registry'
+  ) AS migration_002_present,
+  to_regclass('registry_providers') IS NOT NULL AS providers_present,
+  to_regclass('registry_services') IS NOT NULL AS services_present,
+  to_regclass('registry_world_nullifiers') IS NOT NULL AS nullifiers_present,
+  to_regclass('registry_world_replays') IS NOT NULL AS replays_present;
+
+SELECT
+  has_schema_privilege(current_user, current_schema(), 'USAGE') AS schema_usage,
+  has_table_privilege(current_user, 'proofserve_schema_migrations', 'SELECT') AS migrations_select,
+  has_table_privilege(current_user, 'registry_providers', 'SELECT') AS providers_select,
+  has_table_privilege(current_user, 'registry_providers', 'INSERT') AS providers_insert,
+  has_table_privilege(current_user, 'registry_providers', 'UPDATE') AS providers_update,
+  has_table_privilege(current_user, 'registry_services', 'SELECT') AS services_select,
+  has_table_privilege(current_user, 'registry_services', 'INSERT') AS services_insert,
+  has_table_privilege(current_user, 'registry_services', 'UPDATE') AS services_update,
+  has_table_privilege(current_user, 'registry_world_nullifiers', 'SELECT') AS nullifiers_select,
+  has_table_privilege(current_user, 'registry_world_nullifiers', 'INSERT') AS nullifiers_insert,
+  has_table_privilege(current_user, 'registry_world_replays', 'SELECT') AS replays_select,
+  has_table_privilege(current_user, 'registry_world_replays', 'INSERT') AS replays_insert,
+  has_table_privilege(current_user, 'registry_world_replays', 'UPDATE') AS replays_update;
+
+SELECT
+  (SELECT count(*) FROM agent_runs) AS agent_run_count,
+  (SELECT count(*) FROM agent_run_payment_tombstones) AS payment_tombstone_count,
+  (SELECT count(*) FROM registry_providers) AS provider_count,
+  (SELECT count(*) FROM registry_services) AS service_count,
+  (SELECT count(*) FROM registry_world_nullifiers) AS world_nullifier_count,
+  (SELECT count(*) FROM registry_world_replays) AS world_context_count;
+
+SELECT
+  r.id AS run_id,
+  r.snapshot->>'status' AS status,
+  (t.run_id IS NOT NULL) AS has_payment_tombstone,
+  (t.payment_identifier IS NOT NULL) AS has_payment_identifier,
+  (t.submission_authorized_at IS NOT NULL) AS submission_authorized
+FROM agent_runs AS r
+LEFT JOIN agent_run_payment_tombstones AS t ON t.run_id = r.id
+WHERE r.snapshot->>'status' NOT IN ('COMPLETED', 'FAILED')
+ORDER BY r.created_at, r.id;
+
+COMMIT;
+```
+
+Every presence and privilege value must be true, connection capacity must remain
+sufficient, and the nonterminal query must again return zero rows. For an initial
+deployment to a new database, the run/payment counts must also be zero. A query or
+permission failure stops the gate; do not start the updated API.
+
+After building both rollout artifacts with `npm run build:api` and
+`npm run build:web`, run both API application readiness checks without opening a
+listener. `DATABASE_URL` must already be supplied securely in the environment:
+
+```sh
+node --input-type=module <<'NODE'
+import {
+  createPostgresAgentRunRepository,
+  createPostgresRegistryRepository,
+} from './apps/api/dist/index.js';
+
+if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required');
+const runs = createPostgresAgentRunRepository(process.env.DATABASE_URL);
+const registry = createPostgresRegistryRepository(process.env.DATABASE_URL);
+try {
+  await runs.assertReady();
+  await registry.assertReady();
+  console.log('database readiness: ok');
+} finally {
+  await Promise.allSettled([runs.close(), registry.close()]);
+}
+NODE
+```
+
+Startup performs these checks again before listening or reconciliation. They fail
+closed for database errors, absent markers, incomplete or incompatible schemas,
+disabled constraints, or insufficient privileges. The connection timeout is ten
+seconds; there is no startup retry loop or automatic migration. The registry pool
+also installs an idle-client error listener immediately, emits no raw database
+diagnostic, and relies on the driver to replace the failed idle client. The health
+endpoint reports process liveness and is not a database readiness probe.
 
 ## State and redeployment constraints
 
-Providers, services and World replay protection are process-memory state; only
-agent runs/payment state use PostgreSQL. Run exactly one long-lived API instance:
-no serverless request processes, replicas or horizontal scaling. A restart loses
-registry/verification/replay state even though run receipts survive.
+The updated API stores providers, services, verification metadata, World nullifier
+ownership, and signed RP context nonce, provider, expiration, and one-time
+consumption metadata. Context rows also retain server issuance time and the
+provider verification epoch captured under a provider lock, along with agent runs and payment safety
+records in PostgreSQL. Restarting the
+updated API does not erase these records. Discovery still rechecks verification
+expiry and the configured endpoint at request time. Run exactly one long-lived
+API instance for this deployment; payment reconciliation remains operated under
+the existing single-instance safety policy.
 
-Schedule API deploys during a maintenance window and follow the pre-start gate
-above. Ensure the old process stops before routing traffic to the new one: even a
-single-replica rolling deploy can briefly overlap processes with different
-registry/replay state. Confirm the provider's stop/start procedure before
-deployment. Recreate provider/service records and perform real verification after
-restart; do not seed a verified status. Payment tombstones are permanent safety
-records: preserve them and their associated runs, transaction IDs and receipts.
-Never delete payment tables or records to reset a demo.
+Schedule this database upgrade and paired Web/API rollout during one maintenance
+window and follow both ordered gates above. For later deploys after migration
+002, repeat the post-migration gate. Ensure the old API process stops before
+routing traffic to the new one and confirm the provider's stop/start procedure
+before deployment.
+
+Treat the T05 nonce-bound signal change as a coordinated rollout, not an API-only
+deployment:
+
+1. Build Web and API from the exact same final merged commit with
+   `npm run build:web` and `npm run build:api`.
+2. Before exposing public write paths, resolve the abuse-control decision: either
+   apply effective access restrictions and/or rate limits, or obtain explicit
+   human acceptance of the remaining risk. This remains an unresolved operational
+   decision; this document does not claim controls are implemented or risk
+   acceptance is approved.
+3. Keep World verification traffic blocked while either application is being
+   replaced. Deploy both matching versions during the same maintenance window,
+   and do not admit that traffic until both versions are running. Triage does not
+   need redeployment for this signal change.
+4. Recreate only provider/service records already lost from the old in-memory
+   registry; never seed or derive VERIFIED state from an old run or receipt.
+5. With both matching versions running, confirm that the server-issued,
+   nonce-bound context passes through the Web proxy to the API. Only then, and
+   under separate operational authorization, perform real World verification and
+   explicit service activation.
+
+Migration 002 cannot recover provider, service, verification, nullifier, or replay
+records already lost from the old in-memory registry. Once recreated under the
+updated API, provider/service records survive later restarts. World nullifier
+ownership and replay/context rows, including consumed or expired rows, are
+permanent safety records. Preserve them together with payment tombstones and their
+associated runs, transaction IDs, and receipts; never delete, truncate, or reset
+them to repeat onboarding, verification, or a demonstration.
 
 ## Completed deployment and remaining acceptance
 
@@ -328,26 +463,42 @@ Y06 public deployment and the backend G4 run are complete. The public URLs,
 onboarding result, payment evidence, model result, and final read-only database
 inspection are recorded above. The backend G4 evidence does not complete I05:
 the final browser execution-timeline demonstration remains outstanding until I05
-is implemented and accepted.
+is implemented and accepted. Latest-head PostgreSQL validation has passed; live
+T05 acceptance remains pending. The historical G4 evidence above does not satisfy
+that live acceptance.
 
 For every later manual deployment, restart, cold start, or wake:
 
-1. Stop new run submissions, allow active runs to finish, and execute the exact
-   read-only database safety gate above.
-2. Start or wake the API only when the nonterminal result has zero rows, or when
-   a human payment owner explicitly authorizes recovery of every listed run.
-3. Keep exactly one API instance, automatic API deployment disabled, and the API
-   free of generic uptime pings or other automatic keep-awake traffic.
-4. If the API restarts, recreate the provider and service and perform real World
-   verification again because registry and World verification state are held in
-   process memory. Never seed a verified status.
-5. Preserve durable run records, payment tombstones, transaction IDs, and
-   receipts. Never delete or reset them to repeat a demonstration, and never
+1. For a version-changing deployment, build matching Web and API versions from
+   the same final merged commit. A plain restart, cold start, or wake of an
+   unchanged version does not require a Web rebuild.
+2. Stop new run submissions, allow active runs to finish, and execute the
+   post-migration read-only and application readiness gates above.
+3. Start or wake the API only when the nonterminal result has zero rows. For a
+   version-changing deployment, keep World verification traffic blocked, deploy
+   Web and API in one maintenance window, and do not route that traffic until both
+   matching versions are running. Recovery of any listed run requires a separate
+   payment-owner procedure outside this deployment gate.
+4. Keep exactly one API instance, automatic Web and API deployment disabled, and
+   the API free of generic uptime pings or other automatic keep-awake traffic.
+5. Before exposing public write paths, resolve the still-open abuse-control
+   decision with effective restrictions and/or rate limits or explicit human risk
+   acceptance.
+6. After the first paired rollout, recreate only records that were already lost
+   from the old in-memory registry. Later restarts retain the PostgreSQL records,
+   while expired verification remains ineligible.
+7. For the T05 rollout, confirm the nonce-bound context through the Web proxy
+   before separately authorized real World verification and explicit activation.
+   Triage needs no redeployment for this signal change.
+8. Preserve durable run records, World nullifier ownership, replay/context rows,
+   payment tombstones, transaction IDs, and receipts. Never delete, truncate, or
+   reset them to repeat onboarding, verification, or a demonstration, and never
    substitute fake verification or payment success.
 
-## Validation for this documentation update
-
-Format only `docs/deployment.md`, then run `git diff --check` and
-`git diff --check origin/main HEAD`. Do not install dependencies, run builds,
-restart or redeploy a service, or initiate another payment during this
-documentation-only pass.
+Before the T05 rollout, run the opt-in PostgreSQL integration suite at the latest
+head against a disposable loopback database, then run `npm run validate`. That
+latest-head PostgreSQL integration suite passed all 11 tests against a disposable
+loopback database. Deployment, migration application,
+record recreation, proxy-path confirmation, real World verification, service
+activation, and a new agent run each remain separately authorized operational
+actions; live T05 acceptance remains pending.

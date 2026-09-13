@@ -129,7 +129,8 @@ export function createWorldVerificationApiClient(
       const context = WorldVerificationContextResponseSchema.safeParse(value);
       if (
         !context.success ||
-        context.data.signal !== `proofserve:provider:${provider.data.id}`
+        context.data.signal !==
+          `proofserve:provider:${provider.data.id}:nonce:${context.data.rp_context.nonce.toLowerCase()}`
       ) {
         throw new WorldVerificationApiClientError();
       }

@@ -1,4 +1,5 @@
 import { hashSignal } from '@worldcoin/idkit-core/hashing';
+import { createHash } from 'node:crypto';
 import {
   activeServiceFixture,
   ApiErrorResponseSchema,
@@ -61,15 +62,18 @@ function provider(id: Identifier, verification?: Provider['verification']) {
 function worldResult(
   providerId: Identifier,
   nullifier = '0x0A',
+  nonce = `0x${createHash('sha256').update(`${providerId}:${nullifier}`).digest('hex')}`,
 ): WorldVerificationRequest {
   return WorldVerificationRequestSchema.parse({
     protocol_version: '3.0',
-    nonce: `0x${'11'.repeat(32)}`,
+    nonce,
     action,
     responses: [
       {
         identifier: 'selfie',
-        signal_hash: hashSignal(`proofserve:provider:${providerId}`),
+        signal_hash: hashSignal(
+          `proofserve:provider:${providerId}:nonce:${nonce.toLowerCase()}`,
+        ),
         proof: `0x${'22'.repeat(256)}`,
         merkle_root: `0x${'33'.repeat(32)}`,
         nullifier,
@@ -81,19 +85,25 @@ function worldResult(
 }
 
 function fakeWorld(freshnessSeconds = 60): WorldVerificationClient {
+  let requestSequence = 0;
   return {
     freshnessSeconds,
     createRequest(providerId) {
+      requestSequence += 1;
+      const createdAt = Math.floor(Date.parse(initialTime) / 1_000);
+      const nonce = `0x${createHash('sha256')
+        .update(`${providerId}:${requestSequence}`)
+        .digest('hex')}`;
       return WorldVerificationContextResponseSchema.parse({
         app_id: 'app_sandbox_00000000000000000000000000000000',
         action,
-        signal: `proofserve:provider:${providerId}`,
+        signal: `proofserve:provider:${providerId}:nonce:${nonce}`,
         environment,
         rp_context: {
           rp_id: 'rp_00000000000000000000000000000000',
-          nonce: `0x${'44'.repeat(32)}`,
-          created_at: 1_789_034_400,
-          expires_at: 1_789_034_700,
+          nonce,
+          created_at: createdAt,
+          expires_at: createdAt + 300,
           signature: `0x${'55'.repeat(65)}`,
         },
         allow_legacy_proofs: true,
@@ -104,6 +114,21 @@ function fakeWorld(freshnessSeconds = 60): WorldVerificationClient {
       return canonicalizeWorldFieldElement(result.responses[0].nullifier);
     },
   };
+}
+
+async function issuedWorldResult(
+  app: ReturnType<typeof createApiApp>,
+  providerId: Identifier,
+  nullifier = '0x0A',
+): Promise<WorldVerificationRequest> {
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/providers/${providerId}/verification/world/request`,
+    payload: {},
+  });
+  expect(response.statusCode).toBe(200);
+  const context = WorldVerificationContextResponseSchema.parse(response.json());
+  return worldResult(providerId, nullifier, context.rp_context.nonce);
 }
 
 function setup(
@@ -165,7 +190,9 @@ describe('World RP context and verification routes', () => {
     const context = WorldVerificationContextResponseSchema.parse(
       response.json(),
     );
-    expect(context.signal).toBe('proofserve:provider:provider_context');
+    expect(context.signal).toBe(
+      `proofserve:provider:provider_context:nonce:${context.rp_context.nonce}`,
+    );
     expect(context.allow_legacy_proofs).toBe(true);
     expect(context.require_user_presence).toBe(true);
     expect(createRequest).toHaveBeenCalledExactlyOnceWith('provider_context');
@@ -178,7 +205,7 @@ describe('World RP context and verification routes', () => {
     const { app, repository } = setup(world);
     const original = provider('provider_success');
     repository.createProvider(original);
-    const result = worldResult(original.id);
+    const result = await issuedWorldResult(app, original.id);
     const response = await app.inject({
       method: 'POST',
       url: `/api/providers/${original.id}/verification/world`,
@@ -471,29 +498,83 @@ describe('World RP context and verification routes', () => {
     expect(repository.getProvider(original.id)).toEqual(original);
   });
 
-  it('rejects current duplicate verification without calling World', async () => {
-    const current = provider('provider_current', {
-      providerId: 'provider_current',
-      method: 'WORLD_SELFIE_CHECK',
-      status: 'VERIFIED',
-      verifiedAt: '2026-09-10T11:59:00.000Z',
-      expiresAt: '2026-09-10T12:01:00.000Z',
-    });
+  it('rejects a context from the prior verification epoch without calling World', async () => {
+    const current = provider('provider_current');
     const world = fakeWorld();
     const verify = vi.spyOn(world, 'verify');
     const { app, repository } = setup(world);
     repository.createProvider(current);
+    const firstRequest = await issuedWorldResult(app, current.id, '0x0A');
+    const secondRequest = await issuedWorldResult(app, current.id, '0x0B');
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `/api/providers/${current.id}/verification/world`,
+          payload: firstRequest,
+        })
+      ).statusCode,
+    ).toBe(200);
+    verify.mockClear();
     expectError(
       await app.inject({
         method: 'POST',
         url: `/api/providers/${current.id}/verification/world`,
-        payload: worldResult(current.id),
+        payload: secondRequest,
       }),
-      409,
-      'PROVIDER_ALREADY_VERIFIED',
+      400,
+      'WORLD_PROOF_INVALID',
     );
     expect(verify).not.toHaveBeenCalled();
-    expect(repository.getProvider(current.id)).toEqual(current);
+    expect(repository.getProvider(current.id)?.verification.status).toBe(
+      'VERIFIED',
+    );
+  });
+
+  it('requires an unexpired API-issued context bound to the same provider', async () => {
+    const world = fakeWorld();
+    const verify = vi.spyOn(world, 'verify');
+    const { app, repository, clock } = setup(world);
+    const owner = provider('provider_context_owner');
+    const other = provider('provider_context_other');
+    const expired = provider('provider_context_expired');
+    repository.createProvider(owner);
+    repository.createProvider(other);
+    repository.createProvider(expired);
+
+    expectError(
+      await app.inject({
+        method: 'POST',
+        url: `/api/providers/${owner.id}/verification/world`,
+        payload: worldResult(owner.id, '0x0C', `0x${'99'.repeat(32)}`),
+      }),
+      400,
+      'WORLD_PROOF_INVALID',
+    );
+
+    const ownerContext = await issuedWorldResult(app, owner.id, '0x0D');
+    expectError(
+      await app.inject({
+        method: 'POST',
+        url: `/api/providers/${other.id}/verification/world`,
+        payload: worldResult(other.id, '0x0D', ownerContext.nonce),
+      }),
+      400,
+      'WORLD_PROOF_INVALID',
+    );
+
+    const expiredResult = await issuedWorldResult(app, expired.id, '0x0E');
+    clock.now = '2026-09-10T12:05:00.000Z';
+    expectError(
+      await app.inject({
+        method: 'POST',
+        url: `/api/providers/${expired.id}/verification/world`,
+        payload: expiredResult,
+      }),
+      400,
+      'WORLD_PROOF_INVALID',
+    );
+    expect(verify).not.toHaveBeenCalled();
   });
 
   it('allows an expired provider to renew with server timestamps', async () => {
@@ -509,7 +590,7 @@ describe('World RP context and verification routes', () => {
     const response = await app.inject({
       method: 'POST',
       url: `/api/providers/${expired.id}/verification/world`,
-      payload: worldResult(expired.id, '0x0B'),
+      payload: await issuedWorldResult(app, expired.id, '0x0B'),
     });
     expect(response.statusCode).toBe(200);
     expect(
@@ -519,28 +600,251 @@ describe('World RP context and verification routes', () => {
 });
 
 describe('atomic replay protection', () => {
-  it('rejects the same nullifier for the same provider after expiration', async () => {
-    const { app, repository, clock } = setup(fakeWorld(60));
+  it('requires a newly bound proof before same-nullifier renewal', async () => {
+    const renewalProvider = provider('provider_nonce_bound_renewal');
+    const firstNonce = `0x${'81'.repeat(32)}`;
+    const renewalNonce = `0x${'82'.repeat(32)}`;
+    const firstProof = `0x${'83'.repeat(256)}`;
+    const renewalProof = `0x${'84'.repeat(256)}`;
+    const firstSignal = `proofserve:provider:${renewalProvider.id}:nonce:${firstNonce}`;
+    const renewalSignal = `proofserve:provider:${renewalProvider.id}:nonce:${renewalNonce}`;
+    const proofSignalBindings = new Map([
+      [firstProof, hashSignal(firstSignal)],
+      [renewalProof, hashSignal(renewalSignal)],
+    ]);
+    const signedAt = Math.floor(Date.parse(initialTime) / 1_000);
+    const sign = vi
+      .fn()
+      .mockReturnValueOnce({
+        sig: `0x${'85'.repeat(65)}`,
+        nonce: firstNonce,
+        createdAt: signedAt,
+        expiresAt: signedAt + 300,
+      })
+      .mockReturnValueOnce({
+        sig: `0x${'86'.repeat(65)}`,
+        nonce: renewalNonce,
+        createdAt: signedAt + 60,
+        expiresAt: signedAt + 360,
+      });
+    const fetch = vi.fn(async (_input: string, init: RequestInit) => {
+      const submitted = WorldVerificationRequestSchema.parse(
+        JSON.parse(String(init.body)),
+      );
+      const response = submitted.responses[0];
+      // This controlled boundary models proof-to-signal binding. It is not a
+      // substitute for World's real cryptographic verification.
+      if (proofSignalBindings.get(response.proof) !== response.signal_hash) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            code: 'all_verifications_failed',
+            detail: 'Fictional proof verification failed.',
+            results: [
+              {
+                identifier: 'selfie',
+                success: false,
+                code: 'invalid_proof',
+                detail: 'Fictional proof does not bind to the signal.',
+              },
+            ],
+          }),
+          {
+            status: 400,
+            headers: { 'content-type': 'application/json' },
+          },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          success: true,
+          protocol_version: '3.0',
+          results: [
+            {
+              identifier: 'selfie',
+              success: true,
+              nullifier: response.nullifier,
+            },
+          ],
+          action: submitted.action,
+          nullifier: response.nullifier,
+          created_at: initialTime,
+          environment: submitted.environment,
+          message: 'Verified by a controlled test boundary.',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    const world = createWorldVerificationClient(
+      {
+        appId: 'app_sandbox_00000000000000000000000000000000',
+        rpId: 'rp_00000000000000000000000000000000',
+        signingKey: '87'.repeat(32),
+        action,
+        idkitEnvironment: environment,
+        freshnessSeconds: 60,
+      },
+      { sign, fetch },
+    );
+    const { app, repository, clock } = setup(world);
+    repository.createProvider(renewalProvider);
+
+    const issueContext = async () => {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/providers/${renewalProvider.id}/verification/world/request`,
+        payload: {},
+      });
+      expect(response.statusCode).toBe(200);
+      return WorldVerificationContextResponseSchema.parse(response.json());
+    };
+    const resultFor = (
+      context: { signal: string; rp_context: { nonce: string } },
+      proof: string,
+    ) => {
+      const result = worldResult(
+        renewalProvider.id,
+        '0x0A',
+        context.rp_context.nonce,
+      );
+      return WorldVerificationRequestSchema.parse({
+        ...result,
+        responses: [
+          {
+            ...result.responses[0],
+            signal_hash: hashSignal(context.signal),
+            proof,
+          },
+        ],
+      });
+    };
+
+    const firstContext = await issueContext();
+    const oldResult = resultFor(firstContext, firstProof);
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: `/api/providers/${renewalProvider.id}/verification/world`,
+          payload: oldResult,
+        })
+      ).statusCode,
+    ).toBe(200);
+    const firstVerification = repository.getProvider(
+      renewalProvider.id,
+    )?.verification;
+
+    clock.now = '2026-09-10T12:01:00.000Z';
+    const renewalContext = await issueContext();
+    expect(renewalContext.signal).toBe(renewalSignal);
+    expect(renewalContext.signal).not.toBe(firstContext.signal);
+
+    const oldProofWithFreshNonce = WorldVerificationRequestSchema.parse({
+      ...oldResult,
+      nonce: renewalContext.rp_context.nonce,
+    });
+    expectError(
+      await app.inject({
+        method: 'POST',
+        url: `/api/providers/${renewalProvider.id}/verification/world`,
+        payload: oldProofWithFreshNonce,
+      }),
+      400,
+      'WORLD_PROOF_INVALID',
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(repository.getProvider(renewalProvider.id)?.verification).toEqual(
+      firstVerification,
+    );
+
+    const relabeledOldProof = WorldVerificationRequestSchema.parse({
+      ...oldProofWithFreshNonce,
+      responses: [
+        {
+          ...oldProofWithFreshNonce.responses[0],
+          signal_hash: hashSignal(renewalContext.signal),
+        },
+      ],
+    });
+    expectError(
+      await app.inject({
+        method: 'POST',
+        url: `/api/providers/${renewalProvider.id}/verification/world`,
+        payload: relabeledOldProof,
+      }),
+      400,
+      'WORLD_PROOF_INVALID',
+    );
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(repository.getProvider(renewalProvider.id)?.verification).toEqual(
+      firstVerification,
+    );
+
+    const freshResult = resultFor(renewalContext, renewalProof);
+    const renewal = await app.inject({
+      method: 'POST',
+      url: `/api/providers/${renewalProvider.id}/verification/world`,
+      payload: freshResult,
+    });
+    expect(renewal.statusCode).toBe(200);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(repository.getProvider(renewalProvider.id)?.verification).toEqual({
+      providerId: renewalProvider.id,
+      method: 'WORLD_SELFIE_CHECK',
+      status: 'VERIFIED',
+      verifiedAt: clock.now,
+      expiresAt: '2026-09-10T12:02:00.000Z',
+    });
+  });
+
+  it('allows a fresh same-nullifier renewal after expiry and rejects the old request', async () => {
+    const world = fakeWorld(60);
+    const verify = vi.spyOn(world, 'verify');
+    const { app, repository, clock } = setup(world);
     const original = provider('provider_same_replay');
     repository.createProvider(original);
+    const oldRequest = await issuedWorldResult(app, original.id, '0x0A');
+    const spareRequest = await issuedWorldResult(app, original.id, '0x0A');
     const first = await app.inject({
       method: 'POST',
       url: `/api/providers/${original.id}/verification/world`,
-      payload: worldResult(original.id, '0x0A'),
+      payload: oldRequest,
     });
     expect(first.statusCode).toBe(200);
-    const stored = repository.getProvider(original.id);
     clock.now = '2026-09-10T12:01:00.000Z';
     expectError(
       await app.inject({
         method: 'POST',
         url: `/api/providers/${original.id}/verification/world`,
-        payload: worldResult(original.id, '0x000a'),
+        payload: oldRequest,
       }),
       409,
       'WORLD_PROOF_REPLAYED',
     );
-    expect(repository.getProvider(original.id)).toEqual(stored);
+    expect(verify).toHaveBeenCalledTimes(1);
+    expectError(
+      await app.inject({
+        method: 'POST',
+        url: `/api/providers/${original.id}/verification/world`,
+        payload: spareRequest,
+      }),
+      400,
+      'WORLD_PROOF_INVALID',
+    );
+    expect(verify).toHaveBeenCalledTimes(1);
+
+    const renewal = await app.inject({
+      method: 'POST',
+      url: `/api/providers/${original.id}/verification/world`,
+      payload: await issuedWorldResult(app, original.id, '0x000a'),
+    });
+    expect(renewal.statusCode).toBe(200);
+    expect(verify).toHaveBeenCalledTimes(2);
+    expect(repository.getProvider(original.id)?.verification).toMatchObject({
+      status: 'VERIFIED',
+      verifiedAt: clock.now,
+      expiresAt: '2026-09-10T12:02:00.000Z',
+    });
   });
 
   it('canonicalizes equivalent nullifiers and blocks replay across providers', async () => {
@@ -554,7 +858,7 @@ describe('atomic replay protection', () => {
         await app.inject({
           method: 'POST',
           url: `/api/providers/${firstProvider.id}/verification/world`,
-          payload: worldResult(firstProvider.id, '0x000A'),
+          payload: await issuedWorldResult(app, firstProvider.id, '0x000A'),
         })
       ).statusCode,
     ).toBe(200);
@@ -562,7 +866,7 @@ describe('atomic replay protection', () => {
       await app.inject({
         method: 'POST',
         url: `/api/providers/${secondProvider.id}/verification/world`,
-        payload: worldResult(secondProvider.id, '0x0a'),
+        payload: await issuedWorldResult(app, secondProvider.id, '0x0a'),
       }),
       409,
       'WORLD_PROOF_REPLAYED',
@@ -583,10 +887,11 @@ describe('atomic replay protection', () => {
     const { app, repository } = setup(world);
     const original = provider('provider_concurrent');
     repository.createProvider(original);
+    const result = await issuedWorldResult(app, original.id);
     const request = {
       method: 'POST' as const,
       url: `/api/providers/${original.id}/verification/world`,
-      payload: worldResult(original.id),
+      payload: result,
     };
     const pendingResponses = [app.inject(request), app.inject(request)];
     await vi.waitFor(() => expect(world.verify).toHaveBeenCalledTimes(2));
@@ -619,7 +924,11 @@ describe('atomic replay protection', () => {
         await first.app.inject({
           method: 'POST',
           url: `/api/providers/${firstProvider.id}/verification/world`,
-          payload: worldResult(firstProvider.id, '0x0101'),
+          payload: await issuedWorldResult(
+            first.app,
+            firstProvider.id,
+            '0x0101',
+          ),
         })
       ).statusCode,
     ).toBe(200);
@@ -627,7 +936,11 @@ describe('atomic replay protection', () => {
       await second.app.inject({
         method: 'POST',
         url: `/api/providers/${secondProvider.id}/verification/world`,
-        payload: worldResult(secondProvider.id, '0x0101'),
+        payload: await issuedWorldResult(
+          second.app,
+          secondProvider.id,
+          '0x0101',
+        ),
       }),
       409,
       'WORLD_PROOF_REPLAYED',
@@ -652,7 +965,11 @@ describe('atomic replay protection', () => {
         await first.app.inject({
           method: 'POST',
           url: `/api/providers/${firstProvider.id}/verification/world`,
-          payload: worldResult(firstProvider.id, '0x000A02'),
+          payload: await issuedWorldResult(
+            first.app,
+            firstProvider.id,
+            '0x000A02',
+          ),
         })
       ).statusCode,
     ).toBe(200);
@@ -660,7 +977,11 @@ describe('atomic replay protection', () => {
       await second.app.inject({
         method: 'POST',
         url: `/api/providers/${secondProvider.id}/verification/world`,
-        payload: worldResult(secondProvider.id, '0x0a02'),
+        payload: await issuedWorldResult(
+          second.app,
+          secondProvider.id,
+          '0x0a02',
+        ),
       }),
       409,
       'WORLD_PROOF_REPLAYED',
@@ -686,16 +1007,26 @@ describe('atomic replay protection', () => {
     firstRepository.createProvider(firstProvider);
     secondRepository.createProvider(secondProvider);
 
+    const firstResult = await issuedWorldResult(
+      first.app,
+      firstProvider.id,
+      '0x0A03',
+    );
+    const secondResult = await issuedWorldResult(
+      second.app,
+      secondProvider.id,
+      '0x0A03',
+    );
     const pending = [
       first.app.inject({
         method: 'POST',
         url: `/api/providers/${firstProvider.id}/verification/world`,
-        payload: worldResult(firstProvider.id, '0x0A03'),
+        payload: firstResult,
       }),
       second.app.inject({
         method: 'POST',
         url: `/api/providers/${secondProvider.id}/verification/world`,
-        payload: worldResult(secondProvider.id, '0x0A03'),
+        payload: secondResult,
       }),
     ];
     await vi.waitFor(() => expect(world.verify).toHaveBeenCalledTimes(2));
@@ -736,7 +1067,7 @@ describe('atomic replay protection', () => {
       await failing.app.inject({
         method: 'POST',
         url: `/api/providers/${original.id}/verification/world`,
-        payload: worldResult(original.id, '0x0A04'),
+        payload: await issuedWorldResult(failing.app, original.id, '0x0A04'),
       }),
       500,
       'INTERNAL_ERROR',
@@ -747,7 +1078,7 @@ describe('atomic replay protection', () => {
         await recovery.app.inject({
           method: 'POST',
           url: `/api/providers/${retry.id}/verification/world`,
-          payload: worldResult(retry.id, '0x0A04'),
+          payload: await issuedWorldResult(recovery.app, retry.id, '0x0A04'),
         })
       ).statusCode,
     ).toBe(200);
@@ -760,7 +1091,7 @@ describe('atomic replay protection', () => {
 describe('failure isolation and activation integration', () => {
   it('keeps provider and replay state unchanged after the current operational verification exception', async () => {
     const originalProvider = provider('provider_operational_exception');
-    const result = worldResult(originalProvider.id, '0x0A05');
+    const resultHolder: { value?: WorldVerificationRequest } = {};
     let returnOperationalError = true;
     const fetch = vi.fn(async () => {
       const body = returnOperationalError
@@ -784,11 +1115,11 @@ describe('failure isolation and activation integration', () => {
               {
                 identifier: 'selfie',
                 success: true,
-                nullifier: result.responses[0].nullifier,
+                nullifier: resultHolder.value?.responses[0].nullifier,
               },
             ],
             action,
-            nullifier: result.responses[0].nullifier,
+            nullifier: resultHolder.value?.responses[0].nullifier,
             created_at: initialTime,
             environment,
             message: 'Verified',
@@ -814,6 +1145,8 @@ describe('failure isolation and activation integration', () => {
       repository,
     );
     repository.createProvider(originalProvider);
+    const result = await issuedWorldResult(app, originalProvider.id, '0x0A05');
+    resultHolder.value = result;
 
     expectError(
       await app.inject({
@@ -849,7 +1182,7 @@ describe('failure isolation and activation integration', () => {
     'keeps state and replay available after a direct %s envelope',
     async (code, nullifier) => {
       const originalProvider = provider(`provider_direct_${code}`);
-      const result = worldResult(originalProvider.id, nullifier);
+      const resultHolder: { value?: WorldVerificationRequest } = {};
       let returnDirectEnvelope = true;
       const fetch = vi.fn(async () => {
         const body = returnDirectEnvelope
@@ -865,11 +1198,11 @@ describe('failure isolation and activation integration', () => {
                 {
                   identifier: 'selfie',
                   success: true,
-                  nullifier: result.responses[0].nullifier,
+                  nullifier: resultHolder.value?.responses[0].nullifier,
                 },
               ],
               action,
-              nullifier: result.responses[0].nullifier,
+              nullifier: resultHolder.value?.responses[0].nullifier,
               created_at: initialTime,
               environment,
               message: 'Verified',
@@ -895,6 +1228,12 @@ describe('failure isolation and activation integration', () => {
         repository,
       );
       repository.createProvider(originalProvider);
+      const result = await issuedWorldResult(
+        app,
+        originalProvider.id,
+        nullifier,
+      );
+      resultHolder.value = result;
 
       const failure = await app.inject({
         method: 'POST',
@@ -938,7 +1277,7 @@ describe('failure isolation and activation integration', () => {
       await app.inject({
         method: 'POST',
         url: `/api/providers/${originalProvider.id}/verification/world`,
-        payload: worldResult(originalProvider.id),
+        payload: await issuedWorldResult(app, originalProvider.id),
       }),
       status,
       code,
@@ -969,7 +1308,7 @@ describe('failure isolation and activation integration', () => {
         await app.inject({
           method: 'POST',
           url: `/api/providers/${originalProvider.id}/verification/world`,
-          payload: worldResult(originalProvider.id),
+          payload: await issuedWorldResult(app, originalProvider.id),
         })
       ).statusCode,
     ).toBe(200);
@@ -993,7 +1332,7 @@ describe('failure isolation and activation integration', () => {
         await app.inject({
           method: 'POST',
           url: `/api/providers/${originalProvider.id}/verification/world`,
-          payload: worldResult(originalProvider.id),
+          payload: await issuedWorldResult(app, originalProvider.id),
         })
       ).statusCode,
     ).toBe(200);
